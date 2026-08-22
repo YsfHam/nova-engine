@@ -1,14 +1,16 @@
-use nova_core::app::{ApplicationBuilder, ApplicationContext, ApplicationProxy};
+use nova_core::{EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}};
 
 pub struct AppProxy;
 
 impl ApplicationProxy for AppProxy {
-    fn on_update(&mut self, _ctx: &ApplicationContext) {
+    fn on_update(&mut self, ctx: &ApplicationContext, dt: std::time::Duration) {
     }
 }
 
-fn main() {
+fn main() -> EngineResult<()> {
+    simple_logger::init().unwrap();
+
     ApplicationBuilder::new(AppProxy)
     .build()
-    .run();
+    .run()
 }

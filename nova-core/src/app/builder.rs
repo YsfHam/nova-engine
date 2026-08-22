@@ -6,6 +6,7 @@ pub struct ApplicationBuilder<P: ApplicationProxy> {
     pub(crate) window_attributes: WindowAttributes,
     pub(crate) control_flow: ControlFlow,
     pub(crate) proxy: P,
+    pub(crate) frame_rate: u64,
 }
 
 impl<P: ApplicationProxy> ApplicationBuilder<P> {
@@ -13,7 +14,8 @@ impl<P: ApplicationProxy> ApplicationBuilder<P> {
         Self {
             window_attributes: Window::default_attributes(),
             control_flow: ControlFlow::Poll,
-            proxy
+            proxy,
+            frame_rate: 60,
         }
     }
 
@@ -24,6 +26,11 @@ impl<P: ApplicationProxy> ApplicationBuilder<P> {
 
     pub fn with_control_flow(mut self, new_control_flow: ControlFlow) -> Self {
         self.control_flow = new_control_flow;
+        self
+    }
+
+    pub fn with_frame_rate(mut self, frame_rate: u64) -> Self {
+        self.frame_rate = frame_rate;
         self
     }
 
