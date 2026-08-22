@@ -1,0 +1,8 @@
+[package]
+name = "nova-core"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+winit = "0.30.13"
+wgpu = "30.0.0"

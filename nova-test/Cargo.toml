@@ -1,0 +1,7 @@
+[package]
+name = "nova-test"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+nova-core = { path = "../nova-core" }
