@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use winit::{event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::WindowAttributes};
 
@@ -7,11 +7,12 @@ mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, errors::EngineError, graphics::context::GraphicsContext, time::Clock, window::WindowApi};
+use crate::{EngineResult, assets::AssetsManager, errors::EngineError, graphics::context::GraphicsContext, time::Clock, window::WindowApi};
 
 pub struct ApplicationContext {
     window_api: WindowApi,
-    gfx: GraphicsContext
+    gfx: Arc<GraphicsContext>,
+    pub assets_manager: AssetsManager,
 }
 
 impl ApplicationContext {
@@ -66,18 +67,16 @@ impl<P: ApplicationProxy> Application<P> {
             self.window_attributes.clone()
             .with_visible(false)
         ;
-
-
         let window_api = WindowApi::new(event_loop, window_attributes)?;
-
-        let gfx = pollster::block_on(GraphicsContext::new(window_api.window.clone()))?;
-
+        let gfx = Arc::new(pollster::block_on(GraphicsContext::new(window_api.window.clone()))?);
+        let assets_manager = AssetsManager::new(gfx.clone());
 
         window_api.window.set_visible(window_visible);
 
         self.ctx = Some(ApplicationContext {
             window_api,
             gfx,
+            assets_manager,
         });
 
         Ok(())

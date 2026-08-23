@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::ControlFlow};
 
@@ -31,7 +31,7 @@ impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
                     proxy.on_update(ctx, self.frame_time);
                     dt -= self.frame_time;
                 }
-                render(&mut ctx.gfx);
+                render(&ctx.gfx);
 
                 event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + self.frame_time));
             }
@@ -51,7 +51,7 @@ impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
     }
 }
 
-fn render(gfx: &mut GraphicsContext) {
+fn render(gfx: &Arc<GraphicsContext>) {
     let output = match gfx.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => {

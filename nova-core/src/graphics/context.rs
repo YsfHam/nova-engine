@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use winit::window::Window;
@@ -9,6 +10,8 @@ pub struct GraphicsContext {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
     pub(crate) config: wgpu::SurfaceConfiguration,
+    pub(crate) width: AtomicU32,
+    pub(crate) height: AtomicU32,
 }
 
 impl GraphicsContext {
@@ -26,20 +29,28 @@ impl GraphicsContext {
             surface,
             device,
             queue,
+            width: AtomicU32::new(size.width),
+            height: AtomicU32::new(size.height),
             config,
         })
     }
 
-    pub(crate) fn resize_surface(&mut self, width: u32, height: u32) {
-        if width > 0 && height > 0 && (width != self.config.width || height != self.config.height) {
-            self.config.width = width;
-            self.config.height = height;
+    pub(crate) fn resize_surface(&self, width: u32, height: u32) {
+        if width > 0 && height > 0
+            && (width != self.width.load(Ordering::Relaxed)
+                || height != self.height.load(Ordering::Relaxed))
+        {
+            self.width.store(width, Ordering::Relaxed);
+            self.height.store(height, Ordering::Relaxed);
             self.configure_surface();
         }
     }
 
-    pub(crate) fn configure_surface(&mut self) {
-        self.surface.configure(&self.device, &self.config);
+    pub(crate) fn configure_surface(&self) {
+        let mut config = self.config.clone();
+        config.width = self.width.load(Ordering::Relaxed);
+        config.height = self.height.load(Ordering::Relaxed);
+        self.surface.configure(&self.device, &config);
     }
 
 

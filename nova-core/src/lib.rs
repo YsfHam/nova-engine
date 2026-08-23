@@ -5,5 +5,6 @@ pub mod window;
 pub mod graphics;
 pub mod errors;
 pub mod time;
+pub mod assets;
 
 pub type EngineResult<T> = Result<T, EngineError>;
