@@ -1,5 +1,5 @@
-use std::{any::{Any, TypeId}, collections::HashMap, path::Path, sync::Arc};
-use crate::{assets::{error::AssetError, handle::Handle, load::{AssetLoader, AssetLoadersStorage, LoadContext}, storage::AssetStorage}, graphics::context::GraphicsContext};
+use std::{any::{Any, TypeId}, cell::RefCell, collections::HashMap, path::Path, rc::Rc};
+use crate::{assets::{error::AssetError, handle::Handle, load::{AssetLoader, AssetLoadersStorage, LoadContext}, storage::AssetStorage}, graphics::render::RenderContext};
 
 pub mod handle;
 pub mod load;
@@ -11,15 +11,15 @@ pub trait Asset: 'static {}
 pub struct AssetsManager {
     storages: HashMap<TypeId, Box<dyn Any>>,
     loaders: AssetLoadersStorage,
-    gfx: Arc<GraphicsContext>,
+    render_ctx: Rc<RefCell<RenderContext>>,
 }
 
 impl AssetsManager {
-    pub(crate) fn new(gfx: Arc<GraphicsContext>) -> Self {
+    pub(crate) fn new(render_ctx: Rc<RefCell<RenderContext>>) -> Self {
         Self {
             storages: HashMap::new(),
             loaders: AssetLoadersStorage::new(),
-            gfx,
+            render_ctx,
         }
     }
 
@@ -91,7 +91,7 @@ impl AssetsManager {
 
     fn load_context(&self) -> LoadContext {
         LoadContext {
-            gfx: self.gfx.clone(),
+            render_ctx: self.render_ctx.clone(),
         }
     }
 }

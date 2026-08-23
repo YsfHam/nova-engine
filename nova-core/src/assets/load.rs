@@ -1,10 +1,10 @@
-use std::{any::{Any, TypeId}, collections::HashMap, path::Path, sync::Arc};
+use std::{any::{Any, TypeId}, cell::RefCell, collections::HashMap, path::Path, rc::Rc};
 
-use crate::{assets::{Asset, error::AssetError}, graphics::context::GraphicsContext};
+use crate::{assets::{Asset, error::AssetError}, graphics::render::RenderContext};
 
 
 pub struct LoadContext {
-    pub gfx: Arc<GraphicsContext>,
+    pub render_ctx: Rc<RefCell<RenderContext>>,
 }
 
 pub(crate) struct AssetLoadersStorage {

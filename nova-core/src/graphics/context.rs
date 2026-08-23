@@ -4,6 +4,7 @@ use std::sync::Arc;
 use winit::window::Window;
 
 use crate::EngineResult;
+use crate::graphics::config::GraphicsConfiguration;
 
 pub struct GraphicsContext {
     pub(crate) surface: wgpu::Surface<'static>,
@@ -13,16 +14,22 @@ pub struct GraphicsContext {
     pub(crate) width: AtomicU32,
     pub(crate) height: AtomicU32,
     window: Arc<Window>,
+    gfx_config: GraphicsConfiguration,
 }
 
 impl GraphicsContext {
-    pub(crate) async fn new(window: Arc<Window>) -> EngineResult<Self> {
+
+    pub(crate) fn new(window: Arc<Window>, gfx_config: GraphicsConfiguration) -> EngineResult<Self> {
+        pollster::block_on(Self::new_async(window, gfx_config))
+    }
+
+    async fn new_async(window: Arc<Window>, gfx_config: GraphicsConfiguration) -> EngineResult<Self> {
         let size = window.inner_size();
         let instance = Self::create_instance();
         let surface = instance.create_surface(window.clone())?;
-        let adapter = Self::create_adapter(instance, &surface).await?;
+        let adapter = Self::create_adapter(instance, &surface, &gfx_config).await?;
         let (device, queue) = Self::create_device_and_queue(&adapter).await?;
-        let config = Self::create_surface_config(&surface, &adapter, size.width, size.height);
+        let config = Self::create_surface_config(&surface, &adapter, size.width, size.height, &gfx_config);
 
         surface.configure(&device, &config);
 
@@ -33,7 +40,8 @@ impl GraphicsContext {
             width: AtomicU32::new(size.width),
             height: AtomicU32::new(size.height),
             config,
-            window
+            window,
+            gfx_config
         })
     }
 
@@ -55,8 +63,8 @@ impl GraphicsContext {
         self.surface.configure(&self.device, &config);
     }
 
-    pub(crate) async fn reconfigure(&self) -> EngineResult<Self> {
-        Self::new(self.window.clone()).await
+    pub(crate) fn reconfigure(&self) -> EngineResult<Self> {
+        Self::new(self.window.clone(), self.gfx_config)
     }
 
 
@@ -70,9 +78,9 @@ impl GraphicsContext {
         })
     }
 
-    async fn create_adapter(instance:wgpu::Instance, surface: &wgpu::Surface<'_>) -> EngineResult<wgpu::Adapter> {
+    async fn create_adapter(instance:wgpu::Instance, surface: &wgpu::Surface<'_>, gfx_config: &GraphicsConfiguration) -> EngineResult<wgpu::Adapter> {
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
+            power_preference: gfx_config.power_preference,
             force_fallback_adapter: false,
             compatible_surface: Some(surface),
             apply_limit_buckets: false,
@@ -95,7 +103,7 @@ impl GraphicsContext {
         Ok((device, queue))
     }
 
-    fn create_surface_config(surface: &wgpu::Surface<'_>, adapter: &wgpu::Adapter, width: u32, height: u32) -> wgpu::SurfaceConfiguration {
+    fn create_surface_config(surface: &wgpu::Surface<'_>, adapter: &wgpu::Adapter, width: u32, height: u32, gfx_config: &GraphicsConfiguration) -> wgpu::SurfaceConfiguration {
         let surface_caps = surface.get_capabilities(&adapter);
 
         let surface_format = surface_caps.formats.iter()
@@ -108,8 +116,8 @@ impl GraphicsContext {
             format: surface_format,
             width,
             height,
-            present_mode: surface_caps.present_modes[0],
-            alpha_mode: surface_caps.alpha_modes[0],
+            present_mode: gfx_config.present_mode,
+            alpha_mode: gfx_config.alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
             color_space: wgpu::SurfaceColorSpace::Auto,

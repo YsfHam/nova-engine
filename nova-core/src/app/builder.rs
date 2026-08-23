@@ -1,9 +1,10 @@
 use winit::{event_loop::ControlFlow, window::{Window, WindowAttributes}};
 
-use crate::app::{Application, ApplicationProxy};
+use crate::{app::{Application, ApplicationProxy}, graphics::config::GraphicsConfiguration};
 
 pub struct ApplicationBuilder<P: ApplicationProxy> {
     pub(crate) window_attributes: WindowAttributes,
+    pub(crate) gfx_config: GraphicsConfiguration,
     pub(crate) control_flow: ControlFlow,
     pub(crate) proxy: P,
     pub(crate) frame_rate: u64,
@@ -13,6 +14,7 @@ impl<P: ApplicationProxy> ApplicationBuilder<P> {
     pub fn new(proxy: P) -> Self {
         Self {
             window_attributes: Window::default_attributes(),
+            gfx_config: GraphicsConfiguration::default(),
             control_flow: ControlFlow::Poll,
             proxy,
             frame_rate: 60,
@@ -21,6 +23,11 @@ impl<P: ApplicationProxy> ApplicationBuilder<P> {
 
     pub fn alter_window_attributes(mut self, alter_func: impl FnOnce(WindowAttributes) -> WindowAttributes) -> Self {
         self.window_attributes = alter_func(self.window_attributes);
+        self
+    }
+
+    pub fn alter_graphics_configuration(mut self, alter_func: impl FnOnce(GraphicsConfiguration) -> GraphicsConfiguration) -> Self {
+        self.gfx_config = alter_func(self.gfx_config);
         self
     }
 
