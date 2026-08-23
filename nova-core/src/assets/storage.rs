@@ -1,33 +1,14 @@
 use crate::assets::{Asset, handle::Handle};
 
-struct Counter {
-    counter: u64,
-}
-
-impl Counter {
-    fn new() -> Self {
-        Self {
-            counter: 0,
-        }
-    }
-
-    fn next(&mut self) -> u64 {
-        let val = self.counter;
-        self.counter += 1;
-        val
-    }
-}
-
 struct Slot<A: Asset> {
     data: Option<A>,
-    next_empty: Option<usize>,
-    asset_handle: Handle<A>,
+    next_empty: Option<u32>,
+    generation: u32,
 }
 
 pub struct AssetStorage<A: Asset> {
     storage: Vec<Slot<A>>,
-    empty_slot: Option<usize>,
-    handles_gen: Counter,
+    empty_slot: Option<u32>,
 }
 
 impl<A: Asset> AssetStorage<A> {
@@ -35,12 +16,10 @@ impl<A: Asset> AssetStorage<A> {
         Self {
             storage: vec![],
             empty_slot: None,
-            handles_gen: Counter::new(),
         }
     }
 
     pub fn insert(&mut self, asset: A) -> Handle<A> {
-
         match self.empty_slot {
             Some(empty_slot) => {
                 let (handle, next_empty) = self.update_slot(empty_slot, asset);
@@ -52,59 +31,56 @@ impl<A: Asset> AssetStorage<A> {
     }
 
     pub fn get(&self, handle: Handle<A>) -> Option<&A> {
-        let slot = &self.storage[handle.index];
-        if slot.asset_handle == handle {
+        let slot = self.storage.get(handle.index as usize)?;
+        if slot.generation == handle.generation {
             slot.data.as_ref()
-        }
-        else {
+        } else {
             None
         }
     }
 
     pub fn get_mut(&mut self, handle: Handle<A>) -> Option<&mut A> {
-        let slot = self.storage.get_mut(handle.index)?;
-        if slot.asset_handle == handle {
+        let slot = self.storage.get_mut(handle.index as usize)?;
+        if slot.generation == handle.generation {
             slot.data.as_mut()
-        }
-        else {
+        } else {
             None
         }
     }
 
     pub fn remove(&mut self, handle: Handle<A>) -> Option<A> {
-        let slot = self.storage.get_mut(handle.index)?;
-        if slot.asset_handle == handle {
-            let data = slot.data.take();
-            slot.next_empty = self.empty_slot;
-            self.empty_slot = Some(handle.index);
-            data
+        let slot = self.storage.get_mut(handle.index as usize)?;
+        if slot.generation != handle.generation {
+            return None;
         }
-        else {
-            None
-        }
+        let data = slot.data.take();
+        slot.next_empty = self.empty_slot;
+        self.empty_slot = Some(handle.index);
+        // Bump generation so stale handles no longer match
+        slot.generation = slot.generation.wrapping_add(1);
+        data
     }
-    
 
     fn add_asset(&mut self, asset: A) -> Handle<A> {
-        let handle = Handle::new(self.handles_gen.next(), self.storage.len());
+        let index = self.storage.len() as u32;
+        let generation = 0;
 
         self.storage.push(Slot {
             data: Some(asset),
             next_empty: None,
-            asset_handle: handle,
+            generation,
         });
 
-        handle
+        Handle::new(index, generation)
     }
 
-    fn update_slot(&mut self, index: usize, asset: A) -> (Handle<A>, Option<usize>) {
-        let handle = Handle::new(self.handles_gen.next(), index);
+    fn update_slot(&mut self, index: u32, asset: A) -> (Handle<A>, Option<u32>) {
+        let slot = self.storage.get_mut(index as usize).unwrap();
 
-        let slot = self.storage.get_mut(index).unwrap();
+        let handle = Handle::new(index, slot.generation);
 
         let next_empty = slot.next_empty.take();
         slot.data = Some(asset);
-        slot.asset_handle = handle;
 
         (handle, next_empty)
     }
