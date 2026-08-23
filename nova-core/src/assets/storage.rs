@@ -52,7 +52,7 @@ impl<A: Asset> AssetStorage<A> {
     }
 
     pub fn get(&self, handle: Handle<A>) -> Option<&A> {
-        let slot = self.storage.get(handle.index).unwrap();
+        let slot = &self.storage[handle.index];
         if slot.asset_handle == handle {
             slot.data.as_ref()
         }
@@ -62,7 +62,7 @@ impl<A: Asset> AssetStorage<A> {
     }
 
     pub fn get_mut(&mut self, handle: Handle<A>) -> Option<&mut A> {
-        let slot = self.storage.get_mut(handle.index).unwrap();
+        let slot = self.storage.get_mut(handle.index)?;
         if slot.asset_handle == handle {
             slot.data.as_mut()
         }
@@ -72,7 +72,7 @@ impl<A: Asset> AssetStorage<A> {
     }
 
     pub fn remove(&mut self, handle: Handle<A>) -> Option<A> {
-        let slot = self.storage.get_mut(handle.index).unwrap();
+        let slot = self.storage.get_mut(handle.index)?;
         if slot.asset_handle == handle {
             let data = slot.data.take();
             slot.next_empty = self.empty_slot;
@@ -99,8 +99,9 @@ impl<A: Asset> AssetStorage<A> {
 
     fn update_slot(&mut self, index: usize, asset: A) -> (Handle<A>, Option<usize>) {
         let handle = Handle::new(self.handles_gen.next(), index);
-        
+
         let slot = self.storage.get_mut(index).unwrap();
+
         let next_empty = slot.next_empty.take();
         slot.data = Some(asset);
         slot.asset_handle = handle;

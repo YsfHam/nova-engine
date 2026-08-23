@@ -12,13 +12,14 @@ pub struct GraphicsContext {
     pub(crate) config: wgpu::SurfaceConfiguration,
     pub(crate) width: AtomicU32,
     pub(crate) height: AtomicU32,
+    window: Arc<Window>,
 }
 
 impl GraphicsContext {
     pub(crate) async fn new(window: Arc<Window>) -> EngineResult<Self> {
         let size = window.inner_size();
         let instance = Self::create_instance();
-        let surface = instance.create_surface(window)?;
+        let surface = instance.create_surface(window.clone())?;
         let adapter = Self::create_adapter(instance, &surface).await?;
         let (device, queue) = Self::create_device_and_queue(&adapter).await?;
         let config = Self::create_surface_config(&surface, &adapter, size.width, size.height);
@@ -32,6 +33,7 @@ impl GraphicsContext {
             width: AtomicU32::new(size.width),
             height: AtomicU32::new(size.height),
             config,
+            window
         })
     }
 
@@ -51,6 +53,10 @@ impl GraphicsContext {
         config.width = self.width.load(Ordering::Relaxed);
         config.height = self.height.load(Ordering::Relaxed);
         self.surface.configure(&self.device, &config);
+    }
+
+    pub(crate) async fn reconfigure(&self) -> EngineResult<Self> {
+        Self::new(self.window.clone()).await
     }
 
 
@@ -76,7 +82,7 @@ impl GraphicsContext {
     }
 
     async fn create_device_and_queue(adapter: &wgpu::Adapter) -> EngineResult<(wgpu::Device, wgpu::Queue)> {
-        let result = adapter.request_device(&wgpu::DeviceDescriptor {
+        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("Nova engine graphics device"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
@@ -85,7 +91,8 @@ impl GraphicsContext {
             trace: wgpu::Trace::Off,
         }).await?;
 
-        Ok(result)
+
+        Ok((device, queue))
     }
 
     fn create_surface_config(surface: &wgpu::Surface<'_>, adapter: &wgpu::Adapter, width: u32, height: u32) -> wgpu::SurfaceConfiguration {

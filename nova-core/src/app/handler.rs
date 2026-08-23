@@ -31,7 +31,7 @@ impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
                     proxy.on_update(ctx, self.frame_time);
                     dt -= self.frame_time;
                 }
-                render(&ctx.gfx);
+                render(&mut ctx.gfx);
 
                 event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + self.frame_time));
             }
@@ -51,7 +51,7 @@ impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
     }
 }
 
-fn render(gfx: &Arc<GraphicsContext>) {
+fn render(gfx: &mut Arc<GraphicsContext>) {
     let output = match gfx.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
             wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => {
@@ -68,7 +68,8 @@ fn render(gfx: &Arc<GraphicsContext>) {
                 return;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                panic!("surface lost")
+                *gfx = pollster::block_on(gfx.reconfigure()).unwrap().into();
+                return;
             }
         };
 
