@@ -6,5 +6,9 @@
 
 ],
 
-"settings": {}
+"settings": {
+	"chat.tools.terminal.autoApprove": {
+		"cargo check": true
+	}
+}
 }
