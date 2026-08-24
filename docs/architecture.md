@@ -16,7 +16,7 @@ Nova Engine is a simple, efficient 2D/3D multimedia framework in Rust built on `
 3. **Type safety over raw handles.** Generational, typed `Handle<T>` references. Stale handles resolve to `None`, never use-after-free.
 4. **Nothing outside `nova-core::graphics` touches raw `wgpu`.** `GraphicsContext` stays `pub(crate)`. `RenderContext` is the only public face of the GPU.
 5. **Synchronous and single-threaded** for V1. No async loading, no multithreaded rendering. `Arc<Mutex>` keeps the door open for later.
-6. **Data-driven where it counts.** Material templates and shaders are assets loaded from files; per-instance materials are lightweight runtime objects that reference them.
+6. **Data-driven where it counts.** Material templates and shaders are assets loaded via metadata; per-instance materials are lightweight runtime objects that reference them. Assets own their metadata — it is their identity for serialization, dedup, and hot-reload.
 7. **Layered with hard boundaries.** Each layer has a well-defined responsibility and never reaches below its own level.
 
 ---
@@ -63,7 +63,7 @@ nova-engine/
 | `Frame` | Per-frame state: surface texture, command encoder, uniform arena, frame index |
 | `RenderPass` | Scoped recording context borrowing `Frame` mutably |
 | `AssetManager`, `AssetStorage<T>`, `Handle<T>` | Handle-based resource storage shared by all |
-| `Asset`, `AssetLoader`, `ErasedLoader`, `LoadContext` | Extensible loader system |
+| `Asset`, `AssetLoader`, `ErasedLoader`, `LoadContext` | Metadata-driven loader system (assets own their `Metadata`) |
 | `Shader`, `Texture`, `Sampler`, `Mesh` | GPU-backed assets used by both dimensions |
 | `MaterialTemplate`, `Material` | The material model (recipe + instance) |
 | `WindowApi` | Window abstraction — shared |
@@ -159,6 +159,7 @@ This keeps core clean: it only knows about `DrawBatch`, never `QuadCmd` or `Mesh
 │  ├── Handle<T> (Copy, typed, generational)                │
 │  ├── AssetManager (TypeMap of storages + loader registry) │
 │  ├── Asset / AssetLoader / ErasedLoader / LoadContext     │
+│  ├── Metadata-driven load: load<A>(A::Metadata)          │
 │  └── Assets: Shader, Texture, Sampler, Mesh,              │
 │      MaterialTemplate, Material                           │
 └──────────────────────────────────────────────────────────┘

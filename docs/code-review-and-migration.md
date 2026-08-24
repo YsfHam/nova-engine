@@ -98,6 +98,63 @@
 
 ---
 
+#### ✅ Step 5 — `Handle<T>` + `AssetStorage<T>` generational refactor
+
+**Goal:** Align `Handle` with the target `(index: u32, generation: u32)` design — compact, standard, and usable as batch sort keys.
+
+**What was done:**
+- **`Handle<T>`** (`assets/handle.rs`) — now `{ index: u32, generation: u32, _phantom: PhantomData<T> }`. The global monotonic `Counter`-based `id` is gone. `Copy`, `Clone`, `Debug`, `Hash`, `PartialEq`, `Eq` implemented on `(index, generation)`.
+- **`AssetStorage<T>`** (`assets/storage.rs`) — generational arena: `Vec<Slot<A>>` where each slot owns its data + `next_empty` link + `generation`. Free-list reuse via `empty_slot`.
+  - `insert`: reuse a free slot (keep its generation) or append. Returns `Handle { index, generation }`.
+  - `get`/`get_mut`: validate `handle.generation == slot.generation`.
+  - `remove`: take data, push index to free list, bump `generations[index]` so stale handles no longer match.
+- **`update_slot` uses `unwrap()`** — the index is always valid (comes from `self.empty_slot`).
+
+**Deliverable:** `Handle<T>` is a compact 8-byte generational handle. Batch sort keys can use `Handle` directly. **Resolves L1.**
+
+**Files modified:** `assets/handle.rs`, `assets/storage.rs`
+
+---
+
+#### ✅ Step 6 — Metadata-driven asset system: `Shader` + `Sampler` + `Texture`
+
+**Goal:** The asset system can actually load something — and the load API is built around **asset metadata**, not bare file paths, so refinement parameters and dependencies are first-class.
+
+**Design pivot — metadata-driven loading:**
+Instead of `load::<A>(path)`, the API is `load::<A>(metadata: A::Metadata)`. Each asset type declares a `Metadata` associated type that fully describes how to (re)create the asset: its source plus refinement parameters (mip levels, format, sampler config, …) and `Handle`s to dependent assets. The asset **owns its metadata** (accessible via `Asset::metadata()`), making it self-describing — this is the foundation for future serialization, hot-reload, and asset deduplication.
+
+**What was done:**
+- **`Asset` trait** (`assets.rs`) — now requires `type Metadata: Any + Send + Sync + Clone + 'static` and `fn metadata(&self) -> &Self::Metadata`. Assets own their metadata.
+- **`AssetsManager::load::<A>(metadata)`** — primary load API. Resolves the loader by asset type, passes the metadata through the erased boundary, inserts the resulting asset.
+- **`AssetsManager::load_from_file`** — skeleton for file-based loading (serialization deferred). Currently `unimplemented!()`. The future design: the metadata file stores the asset's source plus, for dependencies, **relative paths** to other metadata files; `load_from_file` reads the file, recursively resolves dependencies, converts the file-form metadata into the runtime form (paths → `Handle`s), and delegates to `load`.
+- **`AssetLoadersStorage`** (`assets/load.rs`) — indexes loaders by `TypeId::of::<A>()` (one loader per asset type). Extension-based routing and `load_with_hint` removed — the metadata's `source` variant encodes the source type. Re-registering a loader for an asset type overwrites the previous entry.
+- **`ErasedLoader`** — `load_erased(Box<dyn Any>)` downcasts to `<A as Asset>::Metadata` at the type-erased boundary.
+- **`AssetError`** (`assets/error.rs`) — enriched with payloads, `Display`, `std::error::Error`. Variants: `IoError`, `LoaderNotFound`, `MetadataTypeMismatch`, `DependencyLoadError`, `ImageError`, `LoadingError`. **Resolves L3.**
+- **`Shader`** (`graphics/shader.rs`) — `{ module, metadata }`. `ShaderMetadata` with `ShaderSource::{File(PathBuf), Inline(String)}`. `Inline` enables embedded default shaders (Step 9). `ShaderMetadata::from_file` / `from_inline` constructors.
+- **`Sampler`** (`graphics/sampler.rs`) — **new asset type**. `{ sampler, metadata }`. `SamplerMetadata` uses engine-native config enums (`AddressMode`, `FilterMode`, `CompareFunction`, `SamplerBorderColor`) kept free of non-serializable `wgpu` types. `SamplerLoader` registered. Shared samplers across textures.
+- **`Texture`** (`graphics/texture.rs`) — `{ texture, view, sampler: Handle<Sampler>, metadata }`. No longer creates its own sampler — references a shared `Sampler` asset. `TextureMetadata` with `TextureSource::{File(PathBuf), Raw { data, size: TextureSize }}`. **`TextureSize`** (new) — `{ width, height, depth, tex_dim: wgpu::TextureDimension }` with `new_texture2d` constructor and `Into<wgpu::Extent3d>`. `TextureMetadata::from_file` / `from_raw` constructors.
+- **Loaders registered** in `app.rs` `init_assets_manager`: `ShaderLoader`, `SamplerLoader`, `TextureLoader`.
+- **`nova-test`** (`nova-test/src/main.rs`) — loads a default `Sampler`, then loads `Shader` and `Texture` via their metadata constructors.
+
+**Dependency form:** Two-struct pattern (decided). Runtime form (with `Handle<Sampler>`) is implemented now; the file form (relative `PathBuf`s to dependency metadata files) is deferred until serialization lands. `load_from_file` will convert between them.
+
+**Serialization:** Deferred — only the skeleton is in place. Field shapes are chosen with serializability in mind (engine-native config enums instead of raw `wgpu` types where they aren't `Clone + Send + Sync`).
+
+**Borrow discipline:** Loaders hold `Rc<RefCell<RenderContext>>`. During `load()`, the loader does `ctx.render_ctx.borrow().device()` to access the GPU. No overlapping `borrow_mut()` is active during loading (it happens outside `begin_frame`).
+
+**Future wins enabled by metadata-driven loading:**
+- **Serialization (Step 13+):** serialize `(TypeId, metadata)`; dependency `Handle` → relative `PathBuf` to the dependency's metadata file.
+- **Asset deduplication (Step 13+):** `Metadata: Hash + Eq` enables `HashMap<A::Metadata, Handle<A>>`.
+- **Hot-reload (Step 13+):** metadata is the asset's identity — reload = load with the same metadata.
+- **Default resources (Step 9):** `ShaderSource::Inline` / `TextureSource::Raw` enable embedded/procedural assets.
+
+**Deliverable:** `assets.load::<Shader>(ShaderMetadata::from_file(...))`, `assets.load::<Sampler>(SamplerMetadata::default())`, and `assets.load::<Texture>(TextureMetadata::from_file(..., sampler_handle))` work and return handles. **Resolves H1, H5, L3, L6.**
+
+**Files added:** `graphics/sampler.rs`
+**Files modified:** `assets.rs`, `assets/load.rs`, `assets/error.rs`, `graphics/shader.rs`, `graphics/texture.rs`, `graphics.rs`, `app.rs`, `nova-test/src/main.rs`
+
+---
+
 ### Progress Summary
 
 | Step | Status | Deliverable |
@@ -107,59 +164,16 @@
 | Step 2 — `Frame` + `RenderPass` | ✅ Done | Per-frame RAII, render pass descriptor, draw methods, `Color` type |
 | Step 3 — `on_render` | ✅ Done | **Blue window** — proxy controls rendering via public API |
 | Step 4 — `AssetsManager` → `RenderContext` | ✅ Done | Loaders wired to `RenderContext` (done during Step 1) |
+| Step 5 — `Handle<T>` generational refactor | ✅ Done | Compact 8-byte generational handle, free-list slot reuse |
+| Step 6 — Metadata-driven asset system | ✅ Done | `Shader` + `Sampler` + `Texture` assets + loaders, metadata-driven load API |
 
-**Critical issues resolved:** C1 (no `on_render`), C2 (no `RenderContext`), C3 (no `Frame`/`RenderPass`), C4 (surface loss), C5 (present mode), H2 (loaders use `GraphicsContext`), H3 (`ApplicationContext` leaks GPU).
-
-**Deferred (not blocking):** C6 (depth buffer — needed for 3D), `UniformArena` (needed for cameras/3D), `frame_index` (double-buffering).
+**Critical issues resolved:** C1 (no `on_render`), C2 (no `RenderContext`), C3 (no `Frame`/`RenderPass`), C4 (surface loss), C5 (present mode), H1 (no loaders), H2 (loaders use `GraphicsContext`), H3 (`ApplicationContext` leaks GPU), H4 (handler reaches into `GraphicsContext`), H5 (loader registration hook), L1 (`Handle` non-generational), L2 (`AssetStorage` panics), L3 (`AssetError` no context), L6 (missing deps).
 
 ---
 
 ## Part B — Remaining Migration Walkthrough
 
 Each step is self-contained and leaves the codebase in a working state.
-
-### Step 5 — Refactor `Handle<T>` + `AssetStorage<T>` to generational design
-
-**Goal:** Align `Handle` with the target `(index: u32, generation: u32)` design — compact, standard, and usable as batch sort keys.
-
-**Why now:** Before the asset system sees heavy use (loaders, materials), align the handle design. The current `Handle { id: u64, index: usize }` uses a global monotonic counter instead of per-slot generations. It works but is non-standard and wasteful (`index` is `usize` = 8 bytes).
-
-**Tasks:**
-1. Change `Handle<T>` to `{ index: u32, generation: u32, _phantom: PhantomData<T> }`. Remove the `Counter`-based `id`.
-2. Refactor `AssetStorage<T>` to `{ slots: Vec<Option<T>>, generations: Vec<u32>, free_list: Vec<u32> }`.
-   - `insert`: reuse a free slot (bump its generation) or append. Return `Handle { index, generation }`.
-   - `get`/`get_mut`: validate `handle.generation == self.generations[handle.index]`.
-   - `remove`: take data, push index to `free_list`, bump `generations[index]`.
-3. Update `Hash`/`Eq`/`PartialEq` on `Handle` to hash/compare `(index, generation)`.
-
-**Deliverable:** `Handle<T>` is a compact 8-byte generational handle. Batch sort keys can use `Handle` directly.
-
-**Dependencies:** None — pure refactor of `assets/handle.rs` + `assets/storage.rs`.
-
----
-
-### Step 6 — First asset types: `Shader` + `Texture`
-
-**Goal:** The asset system can actually load something. `assets.load::<Shader>("shader.wgsl")` and `assets.load::<Texture>("sprite.png")` work and return handles.
-
-**Why now:** This is the foundation for materials (Step 7) and any visible geometry (Step 9). Without loadable assets, the engine can only clear the screen.
-
-**Tasks:**
-1. Add `glam`, `bytemuck`, `image` to `nova-core/Cargo.toml`.
-2. Define `Shader` asset: `{ module: wgpu::ShaderModule }`. Implement `Asset`.
-3. Define `Texture` asset: `{ texture: wgpu::Texture, view: wgpu::TextureView }`. Implement `Asset`.
-4. Implement `ShaderLoader`: reads `.wgsl` file → `device.create_shader_module(...)`. Extensions: `["wgsl"]`.
-5. Implement `TextureLoader`: reads `.png`/`.jpg` → `image::load` → decode → `device.create_texture` + `queue.write_texture`. Extensions: `["png", "jpg"]`.
-6. Register `ShaderLoader` and `TextureLoader` in `AssetsManager::new()` (or a `register_default_loaders` method).
-7. Improve `AssetError`: add payloads (`FileNotFound(PathBuf)`, `IoError(io::Error)`, etc.) and implement `Display` + `std::error::Error`.
-
-**Deliverable:** `assets.load::<Shader>("shader.wgsl")` and `assets.load::<Texture>("sprite.png")` work and return handles.
-
-**Dependencies:** `AssetsManager` already wired to `RenderContext` (Step 4). `Handle` refactor (Step 5) recommended but not strictly required.
-
-**Note on borrow discipline:** Loaders hold `Rc<RefCell<RenderContext>>`. During `load()`, the loader does `ctx.render_ctx.borrow().device()` to access the GPU. Ensure no overlapping `borrow_mut()` is active during loading (it isn't — loading happens outside `begin_frame`).
-
----
 
 ### Step 7 — `MaterialTemplate` + `Material`
 
@@ -173,12 +187,12 @@ Each step is self-contained and leaves the codebase in a working state.
 3. Implement `MaterialTemplate::pipeline_key() -> PipelineKey`.
 4. Define `Material`: `{ template: Handle<MaterialTemplate>, uniforms: Vec<UniformValue>, textures: Vec<Handle<Texture>>, uniform_buffer, bind_groups, dirty }`.
 5. Implement `Material::set_uniform(name, value)`, `Material::set_texture(binding, texture)`, `Material::new(template)`.
-6. Implement `MaterialTemplateLoader`: parses `.mat.toml` (or `.mat.ron`), loads nested `Shader` assets via `ctx.load::<Shader>(...)`, builds the template. Extensions: `["mat.toml"]`.
+6. Implement `MaterialTemplateLoader`: builds a `MaterialTemplate` from `MaterialTemplateMetadata`. The metadata references vertex/fragment shaders by `ShaderMetadata` (which may use `ShaderSource::Inline` for embedded defaults or `ShaderSource::File` for on-disk shaders) and textures by `Handle<Texture>`. Nested shader dependencies are loaded via `AssetsManager::load::<Shader>(shader_metadata)`.
 7. Register `MaterialTemplateLoader`.
 
-**Deliverable:** Materials can be created from templates. Templates can be loaded from files with nested shader dependencies.
+**Deliverable:** Materials can be created from templates. Templates can be loaded with nested shader dependencies (resolved via `ShaderMetadata`).
 
-**Dependencies:** Step 6 (`Shader` + `Texture` assets). Step 5 (`Handle` refactor) recommended.
+**Dependencies:** Step 6 (`Shader` + `Sampler` + `Texture` assets, metadata-driven load API).
 
 ---
 
@@ -209,8 +223,8 @@ Each step is self-contained and leaves the codebase in a working state.
 
 **Tasks:**
 1. Write `nova-core/src/graphics/defaults/shader_2d_flat.wgsl` (vertex: position + color + ortho projection uniform; fragment: output color). Embedded via `include_str!`.
-2. Register default shaders at `RenderContext` init.
-3. Create a default `MaterialTemplate` (2D flat) + default white 1×1 `Texture`.
+2. Register default shaders via `ShaderMetadata::from_inline(...)` + `AssetsManager::load::<Shader>` (the `ShaderSource::Inline` variant already supports this).
+3. Create a default `MaterialTemplate` (2D flat) + default white 1×1 `Texture` via `TextureMetadata::from_raw(...)` (the `TextureSource::Raw` variant already supports this).
 4. Add `UniformArena` to `Frame` (minimal: per-frame staging buffer for the camera projection uniform).
 5. In `nova-test`, create a `Material` from the default template, set `u_color`, define quad vertices, and render in `on_render` using `RenderPass::draw_material` (or direct `set_pipeline` + `set_bind_group` + `draw`).
 
@@ -292,7 +306,7 @@ Each step is self-contained and leaves the codebase in a working state.
 - **Async loading:** `LoadingHandle<T>`, deferred resolution (two-phase load).
 - **ECS integration:** optional backend (feature flag).
 - **Culling:** frustum culling in `nova-3d`.
-- **Asset deduplication:** source-hash based, when memory waste is measured.
+- **Asset deduplication:** `Metadata: Hash + Eq`-based `HashMap<A::Metadata, Handle<A>>`, when memory waste is measured. (Metadata-driven design from Step 6 makes this a natural extension.)
 - **`frame_index: u64`** on `Frame` — for double-buffering schemes (cheap to add anytime).
 
 ---
@@ -307,16 +321,16 @@ Each step is self-contained and leaves the codebase in a working state.
 | C4 — Surface loss panics | 🔴 Critical | ✅ Resolved | Step 0/1 | `begin_frame` handles all cases |
 | C5 — Present mode uncontrolled | 🔴 Critical | ✅ Resolved | Step 1 | `GraphicsConfiguration` |
 | C6 — No depth buffer | 🔴 Critical | ⏳ Deferred | Step 12 | Needed for 3D; placeholder in `RenderPass` |
-| H1 — No loaders/asset types | 🟡 High | ⏳ Step 6 | — | `ShaderLoader`, `TextureLoader` |
+| H1 — No loaders/asset types | 🟡 High | ✅ Resolved | Step 6 | `ShaderLoader`, `SamplerLoader`, `TextureLoader` (metadata-driven) |
 | H2 — `LoadContext` uses `GraphicsContext` | 🟡 High | ✅ Resolved | Step 1/4 | Now `Rc<RefCell<RenderContext>>` |
 | H3 — `ApplicationContext` leaks GPU | 🟡 High | ✅ Resolved | Step 3 | Holds `Rc<RefCell<RenderContext>>` |
 | H4 — `handler.rs` reaches into `GraphicsContext` | 🟡 High | ✅ Resolved | Step 3 | `render()` deleted; goes through `Frame` |
-| H5 — No loader registration hook for 2d/3d | 🟡 High | ⏳ Step 6 | — | Register defaults in `AssetsManager::new` |
-| L1 — `Handle` non-generational design | 🟢 Low | ⏳ Step 5 | — | Refactor to `(index: u32, generation: u32)` |
+| H5 — No loader registration hook for 2d/3d | 🟡 High | ✅ Resolved | Step 6 | Loaders registered in `app.rs` `init_assets_manager` |
+| L1 — `Handle` non-generational design | 🟢 Low | ✅ Resolved | Step 5 | Refactored to `(index: u32, generation: u32)` |
 | L2 — `AssetStorage` panics on bad index | 🟢 Low | ✅ Resolved | Step 0 | `get_mut`/`remove` use `?` |
-| L3 — `AssetError` no context | 🟢 Low | ⏳ Step 6 | — | Add payloads + `Display` |
+| L3 — `AssetError` no context | 🟢 Low | ✅ Resolved | Step 6 | Payloads + `Display` + `std::error::Error` |
 | L5 — `run_app().unwrap()` | 🟢 Low | ⏳ Anytime | — | Store error into `engine_error` |
-| L6 — Missing deps (`glam`, `bytemuck`, `image`) | 🟢 Low | ⏳ Step 6 | — | Add when implementing loaders |
+| L6 — Missing deps (`glam`, `bytemuck`, `image`) | 🟢 Low | ✅ Resolved | Step 6 | `image` added; `glam`/`bytemuck` deferred to when needed (Step 9/11) |
 
 ---
 
@@ -328,16 +342,16 @@ Each step is self-contained and leaves the codebase in a working state.
 ✅ Step 2  — Frame + RenderPass (RAII frame, render pass descriptor, Color)
 ✅ Step 3  — on_render (BLUE WINDOW — proxy controls rendering)  ← FIRST VISIBLE MILESTONE
 ✅ Step 4  — AssetsManager → RenderContext (done during Step 1)
+✅ Step 5  — Handle<T> generational refactor
+✅ Step 6  — Metadata-driven asset system (Shader + Sampler + Texture)  ← asset system functional
 
-⬜ Step 5  — Handle<T> generational refactor
-⬜ Step 6  — Shader + Texture assets + loaders                ← asset system becomes functional
 ⬜ Step 7  — MaterialTemplate + Material
 ⬜ Step 8  — PipelineCache + BindGroupAllocator
 ⬜ Step 9  — Default resources + colored quad                 ← END-TO-END MILESTONE
 ⬜ Step 10 — DrawBatch + submit_draw_batch (batcher contract)
 ⬜ Step 11 — nova-2d crate (sprite batching, Camera2D)
 ⬜ Step 12 — nova-3d crate (meshes, Camera3D, lights, depth pool)
-⬜ Step 13+— Polish (hot-reload, umbrella crate, async, ECS, culling)
+⬜ Step 13+— Polish (hot-reload, umbrella crate, async, ECS, culling, serialization, dedup)
 ```
 
-**Next up:** Step 5 (Handle refactor) or Step 6 (first asset types). Step 5 is recommended first to align the handle design before the asset system sees heavy use, but Step 6 can proceed without it if you want to see results faster.
+**Next up:** Step 7 (`MaterialTemplate` + `Material`) — the bridge between assets and rendering. Builds on the metadata-driven load API from Step 6: `MaterialTemplateMetadata` references shaders via `ShaderMetadata` and textures via `Handle<Texture>`.
