@@ -1,4 +1,4 @@
-use std::{any::{Any, TypeId}, cell::RefCell, collections::HashMap, path::Path, rc::Rc};
+use std::{any::{Any, TypeId}, cell::RefCell, collections::HashMap, rc::Rc};
 
 use crate::{assets::{Asset, error::AssetError}, graphics::render::RenderContext};
 
@@ -8,8 +8,8 @@ pub struct LoadContext {
 }
 
 pub(crate) struct AssetLoadersStorage {
-    loaders_asset_ext: HashMap<String, HashMap<TypeId, usize>>,
-    loaders_map: HashMap<TypeId, usize>,
+    /// One loader per asset type. The asset's `TypeId` is the key.
+    loaders_by_asset_type: HashMap<TypeId, usize>,
     loaders: Vec<Box<dyn ErasedLoader>>,
 }
 
@@ -17,57 +17,57 @@ impl AssetLoadersStorage {
     pub(crate) fn new() -> Self {
         Self {
             loaders: vec![],
-            loaders_map: HashMap::new(),
-            loaders_asset_ext: HashMap::new(),
+            loaders_by_asset_type: HashMap::new(),
         }
     }
 
     pub(crate) fn add<L: AssetLoader>(&mut self, loader: L) {
-        let extensions = loader.extensions();
+        let asset_type_id = TypeId::of::<L::Asset>();
         let loader_index = self.loaders.len();
 
-        self.loaders_map.insert(TypeId::of::<L>(), loader_index);
+        // If a loader for this asset type already exists, overwrite the
+        // stored index so subsequent lookups resolve to the new loader. The
+        // old `Box` stays in `loaders` (unreferenced) rather than compacting
+        // the vec — loaders are registered rarely, so the wasted slot is
+        // negligible and compaction would invalidate any indices held
+        // elsewhere.
+        self.loaders_by_asset_type.insert(asset_type_id, loader_index);
 
         self.loaders.push(Box::new(loader));
-
-        for ext in extensions {
-            self.loaders_asset_ext.entry(ext)
-            .or_insert_with(|| HashMap::new())
-            .insert(TypeId::of::<L::Asset>(), loader_index);
-        }
     }
 
-    pub(crate) fn get_by_ext<A: Asset>(&mut self, ext: &str) -> Result<&mut Box<dyn ErasedLoader>, AssetError> {
-        self.loaders_asset_ext.get(ext)
-        .ok_or(AssetError::UnsupportedExtension)
-        .and_then(|ext_loaders| 
-                ext_loaders.get(&TypeId::of::<A>())
-                .ok_or(AssetError::LoaderNotFound)
-        )
-        .map(|&index| self.loaders.get_mut(index).unwrap())
-    }
-
-    pub(crate) fn get_by_type<L: AssetLoader>(&mut self) -> Result<&mut Box<dyn ErasedLoader>, AssetError> {
-        self.loaders_map.get(&TypeId::of::<L>())
-        .ok_or(AssetError::LoaderNotFound)
-        .map(|&index| self.loaders.get_mut(index).unwrap())
+    pub(crate) fn get<A: Asset>(&mut self) -> Result<&mut Box<dyn ErasedLoader>, AssetError> {
+        self.loaders_by_asset_type.get(&TypeId::of::<A>())
+            .copied()
+            .ok_or(AssetError::LoaderNotFound)
+            .map(|index| self.loaders.get_mut(index).unwrap())
     }
 }
 
+/// Loads an [`Asset`] from its [`Asset::Metadata`].
+///
+/// Each asset type has exactly one loader implementation (registered via
+/// [`AssetsManager::register_loader`](crate::assets::AssetsManager::register_loader)).
+/// The loader receives the fully-resolved runtime metadata — including
+/// `Handle`s to dependencies — and produces the asset.
 pub trait AssetLoader: 'static {
     type Asset: Asset;
 
-    fn load(&mut self, path: &Path, ctx: &LoadContext) -> Result<Self::Asset, AssetError>;
-    fn extensions(&self) -> Vec<String>;
+    fn load(&mut self, metadata: <Self::Asset as Asset>::Metadata, ctx: &LoadContext) -> Result<Self::Asset, AssetError>;
 }
 
+/// Type-erased loader boundary. The `metadata` argument is a boxed
+/// `A::Metadata` downcast inside [`ErasedLoader::load_erased`].
 pub(crate) trait ErasedLoader: 'static {
-    fn load_erased(&mut self, path: &Path, ctx: &LoadContext) -> Result<Box<dyn Any>, AssetError>;
+    fn load_erased(&mut self, metadata: Box<dyn Any>, ctx: &LoadContext) -> Result<Box<dyn Any>, AssetError>;
 }
 
 impl<L: AssetLoader> ErasedLoader for L {
-    fn load_erased(&mut self, path: &Path, ctx: &LoadContext) -> Result<Box<dyn Any>, AssetError> {
-        let asset = self.load(path, ctx)?;
+    fn load_erased(&mut self, metadata: Box<dyn Any>, ctx: &LoadContext) -> Result<Box<dyn Any>, AssetError> {
+        let metadata = metadata
+            .downcast::<<L::Asset as Asset>::Metadata>()
+            .map_err(|_| AssetError::MetadataTypeMismatch)?;
+        let asset = self.load(*metadata, ctx)?;
         Ok(Box::new(asset))
     }
 }

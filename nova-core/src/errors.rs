@@ -1,12 +1,16 @@
 use wgpu::{CreateSurfaceError, RequestAdapterError, RequestDeviceError};
 use winit::error::OsError;
 
+use crate::assets::error::AssetError;
+
 #[derive(Debug)]
 pub enum EngineError {
     SurfaceCreationError(CreateSurfaceError),
     AdapterRequestError(RequestAdapterError),
     DeviceRequestError(RequestDeviceError),
     OsError(OsError),
+    AssetError(AssetError),
+    UserError(String)
 }
 
 impl From<CreateSurfaceError> for EngineError {
@@ -30,5 +34,11 @@ impl From<RequestDeviceError> for EngineError {
 impl From<OsError> for EngineError {
     fn from(value: OsError) -> Self {
         Self::OsError(value)
+    }
+}
+
+impl From<AssetError> for EngineError {
+    fn from(value: AssetError) -> Self {
+        Self::AssetError(value)
     }
 }

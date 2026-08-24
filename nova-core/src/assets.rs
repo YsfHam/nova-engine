@@ -6,7 +6,27 @@ pub mod load;
 pub mod error;
 mod storage;
 
-pub trait Asset: 'static {}
+/// An asset stored in the [`AssetsManager`].
+///
+/// Each asset type declares a [`Metadata`] type that fully describes how to
+/// (re)create the asset: its source data plus any refinement parameters
+/// (mip levels, sampler config, shader stage flags, …). The metadata also
+/// carries [`Handle`]s to dependent assets (e.g. a `Texture` depends on a
+/// `Sampler`), so loading is a single call once dependencies are resolved.
+///
+/// The asset owns its metadata (accessible via [`Asset::metadata`]) so it is
+/// self-describing — this is what makes future serialization, hot-reload and
+/// asset deduplication possible: the metadata *is* the asset's identity.
+///
+/// [`Metadata`]: Self::Metadata
+pub trait Asset: 'static {
+    /// Fully describes how to create this asset. Stored inside the asset and
+    /// used as its identity for serialization / dedup / hot-reload.
+    type Metadata: Any + Send + Sync + Clone + 'static;
+
+    /// Returns the metadata this asset was created from.
+    fn metadata(&self) -> &Self::Metadata;
+}
 
 pub struct AssetsManager {
     storages: HashMap<TypeId, Box<dyn Any>>,
@@ -27,32 +47,38 @@ impl AssetsManager {
         self.loaders.add(loader);
     }
 
-    pub fn load<A: Asset, P: AsRef<Path>>(&mut self, path: P) -> Result<Handle<A>, AssetError> {
-        let path = path.as_ref();
-        let ext = path.extension().ok_or(AssetError::FileMissingExtension)?;
+    /// Loads an asset from fully-resolved runtime metadata.
+    ///
+    /// The metadata must already contain [`Handle`]s to any dependencies
+    /// (e.g. a `TextureMetadata` carries a `Handle<Sampler>`). For the
+    /// file-based variant where dependencies are referenced by relative path,
+    /// see [`AssetsManager::load_from_file`].
+    pub fn load<A: Asset>(&mut self, metadata: A::Metadata) -> Result<Handle<A>, AssetError> {
         let ctx = self.load_context();
-        let loader = self.loaders.get_by_ext::<A>(&ext.to_string_lossy())?;
+        let loader = self.loaders.get::<A>()?;
 
-        let asset = loader 
-            .load_erased(path, &ctx)?
+        let asset = loader
+            .load_erased(Box::new(metadata), &ctx)?
             .downcast::<A>()
-            .unwrap()
-        ;
+            .unwrap();
 
         Ok(self.insert_asset(*asset))
     }
 
-    pub fn load_with_hint<A: Asset, L: AssetLoader, P: AsRef<Path>>(&mut self, path: P) -> Result<Handle<A>, AssetError> {
-        let ctx = self.load_context();
-        let loader = self.loaders.get_by_type::<L>()?;
-
-        let asset = loader 
-            .load_erased(path.as_ref(), &ctx)?
-            .downcast::<A>()
-            .unwrap()
-        ;
-
-        Ok(self.insert_asset(*asset))
+    /// Loads an asset from a metadata file on disk.
+    ///
+    /// The metadata file is a serializable description of the asset: it
+    /// stores the asset's source plus, for dependencies, **relative paths**
+    /// pointing at *other* metadata files. `load_from_file` reads the file,
+    /// recursively resolves dependencies (loading each via this same method),
+    /// converts the file-form metadata into the runtime form (replacing
+    /// paths with `Handle`s) and delegates to [`AssetsManager::load`].
+    ///
+    /// **Not implemented yet** — serialization lands in a later step. For now
+    /// this always returns [`AssetError::NotImplemented`]. Build metadata in
+    /// code and call [`AssetsManager::load`] directly.
+    pub fn load_from_file<A: Asset>(&mut self, _path: impl AsRef<Path>) -> Result<Handle<A>, AssetError> {
+        unimplemented!()
     }
 
     pub fn insert_asset<A: Asset>(&mut self, asset: A) -> Handle<A> {
