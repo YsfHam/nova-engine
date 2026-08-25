@@ -140,7 +140,7 @@ impl AssetLoader for TextureLoader {
     type Asset = Texture;
 
     fn load(
-        &mut self,
+        &self,
         metadata: TextureMetadata,
         ctx: &crate::assets::load::LoadContext,
     ) -> Result<Texture, AssetError> {

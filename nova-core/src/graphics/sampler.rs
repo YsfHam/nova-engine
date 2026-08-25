@@ -159,7 +159,7 @@ impl AssetLoader for SamplerLoader {
     type Asset = Sampler;
 
     fn load(
-        &mut self,
+        &self,
         metadata: SamplerMetadata,
         ctx: &crate::assets::load::LoadContext,
     ) -> Result<Sampler, AssetError> {

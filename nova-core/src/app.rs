@@ -7,7 +7,7 @@ mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::AssetsManager, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContext, sampler::SamplerLoader, shader::ShaderLoader, texture::TextureLoader}, time::Clock, window::WindowApi};
+use crate::{EngineResult, assets::AssetsManager, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, material::MaterialTemplateLoader, render::RenderContext, sampler::SamplerLoader, shader::ShaderLoader, texture::TextureLoader}, time::Clock, window::WindowApi};
 
 pub struct ApplicationContext {
     window_api: WindowApi,
@@ -95,5 +95,6 @@ impl<P: ApplicationProxy> Application<P> {
         assets_manager.register_loader(ShaderLoader);
         assets_manager.register_loader(SamplerLoader);
         assets_manager.register_loader(TextureLoader);
+        assets_manager.register_loader(MaterialTemplateLoader);
     }
 }

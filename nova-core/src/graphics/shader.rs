@@ -9,7 +9,7 @@ pub struct Shader {
 }
 
 impl Shader {
-    pub fn new(device: &wgpu::Device, label: &str, source: &str) -> Self {
+    pub fn new(device: &wgpu::Device, label: &str, source: &str, entry_point: &str) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(label),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -20,12 +20,18 @@ impl Shader {
             metadata: ShaderMetadata {
                 source: ShaderSource::Inline(source.to_string()),
                 label: label.to_string(),
+                entry_point: entry_point.to_string(),
             },
         }
     }
 
     pub fn module(&self) -> &wgpu::ShaderModule {
         &self.module
+    }
+
+    /// The WGSL entry point this shader exposes (e.g. `"vs_main"`, `"fs_main"`).
+    pub fn entry_point(&self) -> &str {
+        &self.metadata.entry_point
     }
 }
 
@@ -41,11 +47,13 @@ pub enum ShaderSource {
 pub struct ShaderMetadata {
     pub source: ShaderSource,
     pub label: String,
+    /// The WGSL entry point to bind at pipeline creation (e.g. `"vs_main"`).
+    pub entry_point: String,
 }
 
 impl ShaderMetadata {
     /// Convenience constructor for the common case: load from a file path.
-    /// The label defaults to the file name.
+    /// The label defaults to the file name and the entry point to `"main"`.
     pub fn from_file(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let label = path
@@ -55,6 +63,7 @@ impl ShaderMetadata {
         Self {
             source: ShaderSource::File(path),
             label,
+            entry_point: "main".to_string(),
         }
     }
 
@@ -64,7 +73,14 @@ impl ShaderMetadata {
         Self {
             source: ShaderSource::Inline(source.into()),
             label: label.into(),
+            entry_point: "main".to_string(),
         }
+    }
+
+    /// Builder: set the entry point (defaults to `"main"`).
+    pub fn with_entry_point(mut self, entry_point: impl Into<String>) -> Self {
+        self.entry_point = entry_point.into();
+        self
     }
 }
 
@@ -82,7 +98,7 @@ impl AssetLoader for ShaderLoader {
     type Asset = Shader;
 
     fn load(
-        &mut self,
+        &self,
         metadata: ShaderMetadata,
         ctx: &crate::assets::load::LoadContext,
     ) -> Result<Shader, AssetError> {

@@ -1,5 +1,5 @@
 use std::{any::{Any, TypeId}, cell::RefCell, collections::HashMap, path::Path, rc::Rc};
-use crate::{assets::{error::AssetError, handle::Handle, load::{AssetLoader, AssetLoadersStorage, LoadContext}, storage::AssetStorage}, graphics::render::RenderContext};
+use crate::assets::{error::AssetError, handle::Handle, load::{AssetLoadersStorage, AssetLoader, LoadContext}, storage::AssetStorage};
 
 pub mod handle;
 pub mod load;
@@ -28,14 +28,22 @@ pub trait Asset: 'static {
     fn metadata(&self) -> &Self::Metadata;
 }
 
+/// Owns the asset storages and loader registry.
+///
+/// The storages and loaders are plain owned fields (no interior mutability)
+/// — `AssetsManager` is the single owner. [`LoadContext`] borrows it
+/// immutably (`&AssetsManager`) for the duration of a `load()` call so
+/// loaders can retrieve already-loaded dependencies via `get_asset`. The
+/// immutable borrow ends before `load()` inserts the new asset, so the
+/// final `&mut self` insert is borrow-checker-safe.
 pub struct AssetsManager {
     storages: HashMap<TypeId, Box<dyn Any>>,
     loaders: AssetLoadersStorage,
-    render_ctx: Rc<RefCell<RenderContext>>,
+    render_ctx: Rc<RefCell<crate::graphics::render::RenderContext>>,
 }
 
 impl AssetsManager {
-    pub(crate) fn new(render_ctx: Rc<RefCell<RenderContext>>) -> Self {
+    pub(crate) fn new(render_ctx: Rc<RefCell<crate::graphics::render::RenderContext>>) -> Self {
         Self {
             storages: HashMap::new(),
             loaders: AssetLoadersStorage::new(),
@@ -53,16 +61,20 @@ impl AssetsManager {
     /// (e.g. a `TextureMetadata` carries a `Handle<Sampler>`). For the
     /// file-based variant where dependencies are referenced by relative path,
     /// see [`AssetsManager::load_from_file`].
+    ///
     pub fn load<A: Asset>(&mut self, metadata: A::Metadata) -> Result<Handle<A>, AssetError> {
-        let ctx = self.load_context();
+        let ctx = LoadContext {
+            render_ctx: self.render_ctx.clone(),
+            assets: self,
+        };
         let loader = self.loaders.get::<A>()?;
-
         let asset = loader
             .load_erased(Box::new(metadata), &ctx)?
             .downcast::<A>()
             .unwrap();
+        let asset = *asset;
 
-        Ok(self.insert_asset(*asset))
+        Ok(self.insert_asset(asset))
     }
 
     /// Loads an asset from a metadata file on disk.
@@ -82,42 +94,36 @@ impl AssetsManager {
     }
 
     pub fn insert_asset<A: Asset>(&mut self, asset: A) -> Handle<A> {
-        let storage = self.get_storage_mut();
+        let storage = self.get_or_create_storage_mut();
         storage.insert(asset)
     }
 
     pub fn get_asset<A: Asset>(&self, handle: Handle<A>) -> Option<&A> {
-        let storage = self.get_storage();
+        let storage = self.get_storage()?;
         storage.get(handle)
     }
 
     pub fn get_asset_mut<A: Asset>(&mut self, handle: Handle<A>) -> Option<&mut A> {
-        let storage = self.get_storage_mut();
+        let storage = self.get_or_create_storage_mut();
         storage.get_mut(handle)
     }
 
     pub fn remove_asset<A: Asset>(&mut self, handle: Handle<A>) -> Option<A> {
-        let storage = self.get_storage_mut();
+        let storage = self.get_or_create_storage_mut();
         storage.remove(handle)
     }
 
-    fn get_storage_mut<A: Asset>(&mut self) -> &mut AssetStorage<A> {
-        self.storages.entry(TypeId::of::<A>())
-        .or_insert_with(|| Box::new(AssetStorage::<A>::new()))
-        .downcast_mut()
-        .unwrap()
+    fn get_or_create_storage_mut<A: Asset>(&mut self) -> &mut AssetStorage<A> {
+        self.storages
+            .entry(TypeId::of::<A>())
+            .or_insert_with(|| Box::new(AssetStorage::<A>::new()))
+            .downcast_mut()
+            .unwrap()
     }
 
-    fn get_storage<A: Asset>(&self) -> &AssetStorage<A> {
-        self.storages.get(&TypeId::of::<A>())
-        .unwrap()
-        .downcast_ref()
-        .unwrap()
-    }
-
-    fn load_context(&self) -> LoadContext {
-        LoadContext {
-            render_ctx: self.render_ctx.clone(),
-        }
+    fn get_storage<A: Asset>(&self) -> Option<&AssetStorage<A>> {
+        self.storages
+            .get(&TypeId::of::<A>())
+            .and_then(|any| any.downcast_ref())
     }
 }

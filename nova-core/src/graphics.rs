@@ -7,3 +7,5 @@ pub mod color;
 pub mod shader;
 pub mod texture;
 pub mod sampler;
+pub mod material;
+pub mod buffer;
