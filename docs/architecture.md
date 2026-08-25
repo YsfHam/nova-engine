@@ -1,7 +1,7 @@
 # Nova Engine — Final Architecture
 
 > **Status:** Authoritative — supersedes `nova-engine-architecture.md` and `rendering-architecture-plan.md`.
-> **Last updated:** 2026-08-23
+> **Last updated:** 2026-08-25
 
 ---
 
@@ -475,67 +475,74 @@ pub struct AssetManager {
 ### 7.3 Traits
 
 ```rust
-pub trait Asset: 'static + Send + Sync {}
+pub trait Asset: 'static {
+    type Metadata: Any + Send + Sync + Clone + 'static;
+    fn metadata(&self) -> &Self::Metadata;
+}
 
 pub trait AssetLoader: 'static {
     type Asset: Asset;
-    fn load(&mut self, path: &Path, ctx: &LoadContext) -> Result<Self::Asset, AssetError>;
-    fn extensions(&self) -> Vec<String>;
+    fn load(&self, metadata: <Self::Asset as Asset>::Metadata, ctx: &LoadContext<'_>) -> Result<Self::Asset, AssetError>;
 }
 
 pub(crate) trait ErasedLoader: 'static {
-    fn load_erased(&mut self, path: &Path, ctx: &LoadContext) -> Result<Box<dyn Any>, AssetError>;
+    fn load_erased(&self, metadata: Box<dyn Any>, ctx: &LoadContext<'_>) -> Result<Box<dyn Any>, AssetError>;
 }
 ```
 
-**`ErasedLoader` pattern:** wraps a concrete `AssetLoader` in a type-erased form so the asset manager can store heterogeneous loaders in a single collection. `load_erased` returns `Box<dyn Any>`, which the caller downcasts to the concrete asset type.
+**`ErasedLoader` pattern:** wraps a concrete `AssetLoader` in a type-erased form so the asset manager can store heterogeneous loaders in a single collection. `load_erased` takes `Box<dyn Any>` metadata (downcast to `A::Metadata` inside) and returns `Box<dyn Any>` (downcast to `A` by the caller).
+
+**Loaders are stateless** (`load` takes `&self`, not `&mut self`). This keeps `AssetLoadersStorage::get()` immutable. If a loader ever needs internal caching, it should use interior mutability (`RefCell`/`Mutex`).
 
 ### 7.4 LoadContext
 
 ```rust
 pub struct LoadContext<'a> {
-    gfx: Arc<GraphicsContext>,       // for GPU uploads (texture, buffer creation)
-    manager: &'a AssetManager,        // for nested dependency loads
+    pub render_ctx: Rc<RefCell<RenderContext>>,   // for GPU uploads (texture, buffer creation)
+    pub assets: &'a AssetsManager,                 // for retrieving already-loaded dependencies
 }
 ```
 
-- Passed to loaders. Provides GPU access (for texture upload, buffer creation) and `AssetManager` access (for nested loads — e.g., `MaterialTemplateLoader` loads `Shader` assets during its own load).
-- **Why `Arc<GraphicsContext>` instead of `&GraphicsContext`:** `load()` becomes self-contained — no external ctx parameter, no borrow splitting at call sites. Loaders can freely access GPU resources without transient borrow lifetimes.
+- Passed to loaders. Provides GPU access (for texture upload, buffer creation) and read-only `AssetsManager` access (for retrieving already-loaded dependencies by handle — e.g. `ctx.assets.get_asset::<Shader>(shader_handle)`).
+- **Loaders do not load new assets** from `LoadContext`. Dependency path→handle resolution is the caller's job (whoever constructs the metadata resolves dependencies first). This will be automated when serialization/`load_from_file` lands.
+- **`LoadContext` is short-lived:** it borrows the manager for the duration of a single `load()` call and is dropped before the manager inserts the resulting asset. The borrow is structured in two phases: immutable (build ctx + get loader + run loader) → ctx dropped → mutable (insert asset).
+- **`render_ctx` stays `Rc<RefCell<…>>`** so a loader can borrow it mutably if ever needed (no overlapping `borrow_mut()` is active during loading — it happens outside `begin_frame`).
 
 ### 7.5 Loading Flow
 
 ```
-load::<Texture>("sprites/player.png")
-  → AssetManager: find loader for "png" extension
-  → ErasedLoader::load_erased("sprites/player.png", ctx)
-    → TextureLoader::load(path, ctx)
-      → (uses GraphicsContext from ctx to upload to GPU)
+load::<Texture>(TextureMetadata::from_file("sprites/player.png", sampler_handle))
+  → AssetsManager: find loader for Texture (by TypeId)
+  → ErasedLoader::load_erased(Box::new(metadata), ctx)
+    → TextureLoader::load(metadata, ctx)
+      → (uses render_ctx from ctx to create GPU texture + upload pixels)
     → Result<Texture>
+  → LoadContext dropped (immutable borrow of AssetsManager ends)
   → AssetStorage<Texture>: insert → Handle<Texture>
   → Return Handle<Texture>
 ```
 
-- `load::<T>()` (typed) is preferred over untyped `load_file()`.
-- GraphicsContext (Arc) is passed to loaders that need GPU access via the `LoadContext`.
+- `load::<T>(metadata)` is the primary API. The metadata carries everything needed to create the asset, including `Handle`s to dependencies.
+- `load_from_file(path)` will be implemented when serialization lands — it reads a metadata file from disk, resolves dependency paths → handles, then delegates to `load(metadata)`.
 
 ### 7.6 Nested Dependencies
 
 Assets can depend on other assets:
-- `MaterialTemplate` depends on `Shader` assets.
+- `MaterialTemplate` depends on `Shader` assets (via `Handle<Shader>` in `MaterialTemplateMetadata`).
 - `Material` depends on a `MaterialTemplate` handle.
 - `Mesh` may depend on `Material` (for default material assignment).
 
-**Strategy (V1): Immediate nested load.** The loader calls `ctx.load::<Shader>(...)` synchronously during its own load. The dependency is fully loaded before the parent asset is returned. Simple, blocks on I/O. Move to two-phase (metadata → resolve deps) only if loading stalls become a problem.
+**Strategy (V1): Caller-resolved dependencies.** The caller resolves dependencies *before* constructing the metadata — e.g. loads `Shader`s first, then passes `Handle<Shader>`s into `MaterialTemplateMetadata`. The loader retrieves already-loaded deps via `ctx.assets.get_asset(handle)` if it needs to inspect them at load time. Re-entrant loading (a loader calling `load()` for new assets) is *not* supported — this keeps the borrow model simple. When serialization lands, `load_from_file` will automate the resolve-deps-then-load flow.
 
 ### 7.7 Operations
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| **Add** | `add<T: Asset>(asset: T) -> Handle<T>` | Store a pre-constructed asset. No GPU access needed. |
-| **Load** | `load<T: Asset>(path) -> Result<Handle<T>>` | Read file → find loader by extension → run loader → store → return handle. |
-| **Load with hint** | `load_with_hint<T, L>(path) -> Result<Handle<T>>` | Load using a specific loader type (disambiguation). |
-| **Remove** | `remove<T: Asset>(handle) -> Option<T>` | Free slot, bump generation. Stale handles return `None`. |
-| **Add loader** | `register_loader<L: AssetLoader>(loader)` | Register a new loader for specific file extensions. |
+| **Insert** | `insert_asset<T: Asset>(asset: T) -> Handle<T>` | Store a pre-constructed asset. No loader invoked. |
+| **Load** | `load<T: Asset>(metadata: T::Metadata) -> Result<Handle<T>>` | Find loader by asset TypeId → run loader with metadata → store → return handle. |
+| **Load from file** | `load_from_file<T: Asset>(path) -> Result<Handle<T>>` | *(Not yet implemented)* Read metadata file → resolve dependency paths → `load(metadata)`. |
+| **Remove** | `remove_asset<T: Asset>(handle) -> Option<T>` | Free slot, bump generation. Stale handles return `None`. |
+| **Register loader** | `register_loader<L: AssetLoader>(loader)` | Register a loader for an asset type (one loader per type; re-register overwrites). |
 | **Access** | `get_asset(handle) -> Option<&T>` / `get_asset_mut(handle) -> Option<&mut T>` | Typed access with generational validation. |
 
 ---
@@ -565,23 +572,27 @@ A `Material` is almost free to create — it's just a handle + a small bag of va
 
 ```rust
 pub struct MaterialTemplate {
-    vertex_shader: Handle<Shader>,
-    fragment_shader: Handle<Shader>,
-    vertex_layout: VertexBufferLayout,
-    blend_state: BlendState,
-    depth_stencil: Option<DepthStencilState>,
-    topology: PrimitiveTopology,
-    uniform_layout: Vec<UniformBinding>,  // name, type, slot, visibility
+    metadata: MaterialTemplateMetadata,   // owned — the asset's identity
+}
+
+pub struct MaterialTemplateMetadata {
+    pub vertex_shader: Handle<Shader>,
+    pub fragment_shader: Handle<Shader>,
+    pub vertex_buffer_layout: VertexBufferLayout,
+    pub blend_state: BlendMode,              // engine-native (not wgpu::BlendState)
+    pub depth_stencil: Option<DepthStencilConfig>,
+    pub topology: Topology,                   // engine-native
+    pub uniform_layout: Vec<UniformBinding>,
 }
 
 pub struct Material {
     template: Handle<MaterialTemplate>,
-    uniforms: Vec<UniformValue>,      // indexed by uniform_layout slot
-    textures: Vec<Handle<Texture>>,   // texture bindings
-    // Derived, cached (per-instance):
-    uniform_buffer: Option<wgpu::Buffer>,
-    bind_groups: Vec<Option<wgpu::BindGroup>>,
+    uniforms: HashMap<String, UniformValue>,  // keyed by name
+    textures: HashMap<u32, Handle<Texture>>,  // keyed by binding slot
     dirty: bool,
+    // Derived, cached (per-instance) — added in Step 8:
+    // uniform_buffer: Option<wgpu::Buffer>,
+    // bind_groups: Vec<Option<wgpu::BindGroup>>,
 }
 ```
 
@@ -614,14 +625,9 @@ The `MaterialTemplate` produces (or contributes to) the `PipelineKey` directly:
 ```rust
 impl MaterialTemplate {
     pub fn pipeline_key(&self) -> PipelineKey {
-        PipelineKey {
-            vertex_shader: self.vertex_shader,
-            fragment_shader: self.fragment_shader,
-            vertex_layout: self.vertex_layout.clone(),
-            blend_state: self.blend_state,
-            depth_stencil: self.depth_stencil,
-            topology: self.topology,
-        }
+        // The key is the identity of this template asset. Step 8 will back
+        // PipelineKey with Handle<MaterialTemplate> (already Hash + Eq + Copy).
+        PipelineKey { _private: () }
     }
 }
 ```
@@ -634,21 +640,22 @@ The template defines a list of uniform bindings:
 
 ```rust
 pub struct UniformBinding {
-    name: String,
-    uniform_type: UniformType,   // Mat4, Vec3, Float, etc.
-    binding_slot: u32,
-    visibility: ShaderStage,     // Vertex, Fragment, or both
+    pub name: String,
+    pub ty: UniformType,          // Mat4, Vec4, F32 (grows as needed)
+    pub binding_slot: u32,
+    pub visibility: ShaderStage,  // Vertex, Fragment, Both (engine-native)
 }
 
 pub enum UniformType {
-    Float,
-    Vec2,
-    Vec3,
-    Vec4,
-    Mat3,
     Mat4,
-    FloatArray(usize),
-    Vec4Array(usize),
+    Vec4,
+    F32,
+}
+
+pub enum UniformValue {
+    Mat4(Mat4),
+    Vec4(Vec4),
+    F32(f32),
 }
 ```
 
@@ -656,14 +663,13 @@ When a `Material` sets a uniform:
 
 ```rust
 impl Material {
-    pub fn set_uniform(&mut self, name: &str, value: UniformValue) {
-        // Look up slot in template's uniform_layout
-        // Store in self.uniforms[slot]
+    pub fn set_uniform(&mut self, name: impl Into<String>, value: UniformValue) {
+        self.uniforms.insert(name.into(), value);
         self.dirty = true;
     }
 
     pub fn set_texture(&mut self, binding: u32, texture: Handle<Texture>) {
-        self.textures[binding] = texture;
+        self.textures.insert(binding, texture);
         self.dirty = true;
     }
 }

@@ -2,7 +2,7 @@
 
 > **Companion to:** `docs/architecture.md` (the target architecture).
 > **Purpose:** Track progress against the target architecture, identify remaining work, and lay out a step-by-step migration path.
-> **Last updated:** 2026-08-24
+> **Last updated:** 2026-08-25
 
 ---
 
@@ -155,6 +155,46 @@ Instead of `load::<A>(path)`, the API is `load::<A>(metadata: A::Metadata)`. Eac
 
 ---
 
+#### ✅ Step 7 — `MaterialTemplate` + `Material` + asset system refinements
+
+**Goal:** The material model that drives pipeline compilation. Templates are assets (shared, metadata-driven); materials are lightweight per-instance objects. Also refined the asset system's borrow model and added shader entry points.
+
+**What was done:**
+
+**Asset system refinements:**
+- **`LoadContext<'a>`** now holds `&'a AssetsManager` (immutable ref) + `Rc<RefCell<RenderContext>>`. Loaders can retrieve already-loaded dependencies by handle via `ctx.assets.get_asset(handle)` (e.g. a `MaterialTemplateLoader` resolving its `Shader` dependencies). Loaders do *not* load new assets — dependency path→handle resolution is the caller's job (automated later via serialization/`load_from_file`).
+- **`AssetLoader::load` takes `&self`** (was `&mut self`). Loaders are stateless; this keeps `AssetLoadersStorage::get()` immutable. If a loader ever needs internal caching, it should use interior mutability (`RefCell`/`Mutex`).
+- **`AssetsManager::load` borrow structure** — two-phase: phase 1–3 borrows `&self` immutably (build `LoadContext`, get loader, run loader), `LoadContext` is dropped, phase 4 borrows `&mut self` to insert. The borrow checker accepts this because the immutable borrow ends before the mutable insert.
+- **`AssetsManager` owns `storages` + `loaders` as plain fields** (no `Rc<RefCell>`). Simple, direct ownership. `get_asset`/`get_asset_mut`/`remove_asset` return plain `&A`/`&mut A`/`Option<A>`.
+- **`Shader` gained `entry_point`** — `ShaderMetadata` now carries an `entry_point: String` (default `"main"`) with a `with_entry_point` builder. `Shader::entry_point()` accessor. Needed for pipeline creation (Step 8).
+
+**Material types (`graphics/material.rs`):**
+- **`MaterialTemplate`** — asset owning `MaterialTemplateMetadata`. Accessors: `vertex_shader()`, `fragment_shader()`, `vertex_buffer_layout()`, `blend_state()`, `depth_stencil()`, `topology()`, `uniform_layout()`. `pipeline_key()` returns an opaque `PipelineKey` (Step 8 will back it with `Handle<MaterialTemplate>`).
+- **`MaterialTemplateMetadata`** — uses engine-native enums (not raw `wgpu`) for serializability, consistent with the Step 6 `SamplerMetadata` pattern:
+  - `BlendMode` (`None`/`Alpha`/`Additive`) → `Option<wgpu::BlendState>`
+  - `DepthStencilConfig` + `DepthFormat` + `DepthCompare` → `wgpu::DepthStencilState` (wgpu 30: `depth_write_enabled: Option<bool>`, `depth_compare: Option<CompareFunction>`)
+  - `Topology` → `wgpu::PrimitiveTopology`
+  - `ShaderStage` → `wgpu::ShaderStages`
+  - `VertexBufferLayout` kept with `wgpu::VertexAttribute` (consistent with `TextureMetadata` keeping `wgpu::TextureFormat` — simple serializable types don't need wrapping)
+- **`UniformBinding`** — `{ name, ty: UniformType, binding_slot, visibility: ShaderStage }`. Drives bind group layout creation (Step 8).
+- **`UniformType`** — `Mat4`, `Vec4`, `F32` with `size()`.
+- **`UniformValue`** — `Mat4(Mat4)`, `Vec4(Vec4)`, `F32(f32)` with `write_bytes(bytes, offset)` using `bytemuck` + `glam`'s column-major (std140) layout.
+- **`Material`** — per-instance: `{ template: Handle<MaterialTemplate>, uniforms: HashMap<String, UniformValue>, textures: HashMap<u32, Handle<Texture>>, dirty: bool }`. Methods: `new`, `set_uniform`, `set_texture`, `is_dirty`/`clear_dirty`. The `dirty` flag drives Step 8's `Material::ensure_bound`.
+- **`PipelineKey`** — opaque type (`_private: ()`); placeholder. Step 8 will store `Handle<MaterialTemplate>` inside and use `(PipelineKey, TextureFormat)` as the `PipelineCache` key.
+- **`MaterialTemplateLoader`** — trivial: metadata carries resolved `Handle<Shader>`s, loader wraps in `MaterialTemplate::new`. No nested loading at loader level.
+- **`MaterialTemplateLoader` registered** in `app.rs` `init_assets_manager` alongside `ShaderLoader`, `SamplerLoader`, `TextureLoader`.
+
+**Dependencies added:** `glam = "0.30"`, `bytemuck = "1.23"` (with `derive` feature).
+
+**Design note — dependency resolution model:** Dependencies are resolved by the *caller* before the loader runs (e.g. caller loads `Shader`s first, passes `Handle<Shader>`s into `MaterialTemplateMetadata`). Loaders retrieve already-loaded deps via `ctx.assets.get_asset(handle)`. Re-entrant loading (loader calling `load()` for new assets) is *not* supported — this keeps the borrow model simple. When serialization lands, `load_from_file` will resolve dependency paths → handles (by loading deps first), then call `load()` with fully-resolved metadata.
+
+**Deliverable:** `MaterialTemplate` + `Material` + `MaterialTemplateLoader` implemented. Materials can be created from templates with per-instance uniforms and textures. `PipelineKey` ready for Step 8. `LoadContext` provides read-only asset access for dependency retrieval.
+
+**Files added:** `graphics/material.rs` (already existed as skeleton, fully written)
+**Files modified:** `assets.rs`, `assets/load.rs`, `graphics/shader.rs`, `graphics.rs`, `app.rs`
+
+---
+
 ### Progress Summary
 
 | Step | Status | Deliverable |
@@ -166,6 +206,7 @@ Instead of `load::<A>(path)`, the API is `load::<A>(metadata: A::Metadata)`. Eac
 | Step 4 — `AssetsManager` → `RenderContext` | ✅ Done | Loaders wired to `RenderContext` (done during Step 1) |
 | Step 5 — `Handle<T>` generational refactor | ✅ Done | Compact 8-byte generational handle, free-list slot reuse |
 | Step 6 — Metadata-driven asset system | ✅ Done | `Shader` + `Sampler` + `Texture` assets + loaders, metadata-driven load API |
+| Step 7 — `MaterialTemplate` + `Material` | ✅ Done | Material recipe/instance model, engine-native enums, `LoadContext` borrow refinement, shader entry points |
 
 **Critical issues resolved:** C1 (no `on_render`), C2 (no `RenderContext`), C3 (no `Frame`/`RenderPass`), C4 (surface loss), C5 (present mode), H1 (no loaders), H2 (loaders use `GraphicsContext`), H3 (`ApplicationContext` leaks GPU), H4 (handler reaches into `GraphicsContext`), H5 (loader registration hook), L1 (`Handle` non-generational), L2 (`AssetStorage` panics), L3 (`AssetError` no context), L6 (missing deps).
 
@@ -175,27 +216,6 @@ Instead of `load::<A>(path)`, the API is `load::<A>(metadata: A::Metadata)`. Eac
 
 Each step is self-contained and leaves the codebase in a working state.
 
-### Step 7 — `MaterialTemplate` + `Material`
-
-**Goal:** The material model that drives pipeline compilation. Templates are assets (loaded from file, shared); materials are lightweight instances.
-
-**Why now:** Materials are the bridge between assets (shaders, textures) and rendering. Without them, you can't draw anything with a pipeline.
-
-**Tasks:**
-1. Define `MaterialTemplate` asset: `{ vertex_shader, fragment_shader, vertex_layout, blend_state, depth_stencil, topology, uniform_layout }`. Implement `Asset`.
-2. Define `UniformBinding`, `UniformType`, `UniformValue`.
-3. Implement `MaterialTemplate::pipeline_key() -> PipelineKey`.
-4. Define `Material`: `{ template: Handle<MaterialTemplate>, uniforms: Vec<UniformValue>, textures: Vec<Handle<Texture>>, uniform_buffer, bind_groups, dirty }`.
-5. Implement `Material::set_uniform(name, value)`, `Material::set_texture(binding, texture)`, `Material::new(template)`.
-6. Implement `MaterialTemplateLoader`: builds a `MaterialTemplate` from `MaterialTemplateMetadata`. The metadata references vertex/fragment shaders by `ShaderMetadata` (which may use `ShaderSource::Inline` for embedded defaults or `ShaderSource::File` for on-disk shaders) and textures by `Handle<Texture>`. Nested shader dependencies are loaded via `AssetsManager::load::<Shader>(shader_metadata)`.
-7. Register `MaterialTemplateLoader`.
-
-**Deliverable:** Materials can be created from templates. Templates can be loaded with nested shader dependencies (resolved via `ShaderMetadata`).
-
-**Dependencies:** Step 6 (`Shader` + `Sampler` + `Texture` assets, metadata-driven load API).
-
----
-
 ### Step 8 — `PipelineCache` + `BindGroupAllocator` in `RenderContext`
 
 **Goal:** Pipeline compilation is deduplicated; bind groups are allocated efficiently.
@@ -203,15 +223,15 @@ Each step is self-contained and leaves the codebase in a working state.
 **Why now:** Without pipeline caching, every material recompiles its pipeline on first use. With many materials, this stalls. The cache keys off the template, so materials sharing a template share a pipeline.
 
 **Tasks:**
-1. Implement `PipelineCache`: `HashMap<(PipelineKey, TextureFormat), wgpu::RenderPipeline>`. `get_or_compile(key, format, device)`.
-2. Implement `BindGroupAllocator`: creates `wgpu::BindGroup` from material data + layout. Pool descriptor sets to avoid churn.
+1. Implement `PipelineCache`: `HashMap<(PipelineKey, TextureFormat), wgpu::RenderPipeline>`. `PipelineKey` is produced by `MaterialTemplate::pipeline_key()` (Step 7; currently opaque — back it with `Handle<MaterialTemplate>`). `get_or_compile(key, format, device)` resolves the template handle to fetch shaders (via `AssetsManager::get_asset`), reads `entry_point()`/`vertex_buffer_layout()`/`blend_state()`/`depth_stencil()`/`topology()`, and compiles the pipeline.
+2. Implement `BindGroupAllocator`: creates `wgpu::BindGroup` from material data + the template's `uniform_layout()` (engine-native enums → `wgpu` via `Into` impls). Pool descriptor sets to avoid churn.
 3. Add both to `RenderContext`.
-4. Implement `Material::ensure_bound(device, queue)` — update uniform buffer + rebuild bind groups if `dirty`.
+4. Implement `Material::ensure_bound(device, queue)` — pack uniforms via `UniformValue::write_bytes`, update uniform buffer + rebuild bind groups if `is_dirty()`, then `clear_dirty()`.
 5. Implement `RenderPass::draw_material(&material, ...)` — convenience: bind pipeline + bind groups + draw.
 
 **Deliverable:** Materials compile pipelines (cached by template) and bind groups on first use; subsequent uses are cache hits.
 
-**Dependencies:** Step 7 (`MaterialTemplate` + `Material`).
+**Dependencies:** Step 7 (`MaterialTemplate` + `Material` + `PipelineKey` + engine-native enums + `UniformValue::write_bytes`).
 
 ---
 
@@ -330,7 +350,7 @@ Each step is self-contained and leaves the codebase in a working state.
 | L2 — `AssetStorage` panics on bad index | 🟢 Low | ✅ Resolved | Step 0 | `get_mut`/`remove` use `?` |
 | L3 — `AssetError` no context | 🟢 Low | ✅ Resolved | Step 6 | Payloads + `Display` + `std::error::Error` |
 | L5 — `run_app().unwrap()` | 🟢 Low | ⏳ Anytime | — | Store error into `engine_error` |
-| L6 — Missing deps (`glam`, `bytemuck`, `image`) | 🟢 Low | ✅ Resolved | Step 6 | `image` added; `glam`/`bytemuck` deferred to when needed (Step 9/11) |
+| L6 — Missing deps (`glam`, `bytemuck`, `image`) | 🟢 Low | ✅ Resolved | Step 6/7 | `image` added in Step 6; `glam` + `bytemuck` added in Step 7 |
 
 ---
 
@@ -344,8 +364,8 @@ Each step is self-contained and leaves the codebase in a working state.
 ✅ Step 4  — AssetsManager → RenderContext (done during Step 1)
 ✅ Step 5  — Handle<T> generational refactor
 ✅ Step 6  — Metadata-driven asset system (Shader + Sampler + Texture)  ← asset system functional
+✅ Step 7  — MaterialTemplate + Material + asset system refinements
 
-⬜ Step 7  — MaterialTemplate + Material
 ⬜ Step 8  — PipelineCache + BindGroupAllocator
 ⬜ Step 9  — Default resources + colored quad                 ← END-TO-END MILESTONE
 ⬜ Step 10 — DrawBatch + submit_draw_batch (batcher contract)
@@ -354,4 +374,4 @@ Each step is self-contained and leaves the codebase in a working state.
 ⬜ Step 13+— Polish (hot-reload, umbrella crate, async, ECS, culling, serialization, dedup)
 ```
 
-**Next up:** Step 7 (`MaterialTemplate` + `Material`) — the bridge between assets and rendering. Builds on the metadata-driven load API from Step 6: `MaterialTemplateMetadata` references shaders via `ShaderMetadata` and textures via `Handle<Texture>`.
+**Next up:** Step 8 (`PipelineCache` + `BindGroupAllocator`) — pipeline compilation deduplicated by `MaterialTemplate`, bind groups built from `UniformValue` data. Builds on Step 7's `PipelineKey`, `MaterialTemplate` accessors, and engine-native enums.
