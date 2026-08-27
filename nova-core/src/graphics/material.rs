@@ -1,11 +1,14 @@
 
 use std::collections::HashMap;
 
-use glam::{Mat4, Vec4};
-
 use crate::{
     assets::{Asset, error::AssetError, handle::Handle, load::{AssetLoader, LoadContext}},
-    graphics::{buffer::VertexBufferLayout, shader::Shader},
+    graphics::{
+        buffer::VertexBufferLayout,
+        shader::Shader,
+        texture::Texture,
+        uniform::{UniformBinding, UniformValue},
+    },
 };
 
 pub struct MaterialTemplate {
@@ -47,19 +50,8 @@ impl MaterialTemplate {
         &self.metadata.uniform_layout
     }
 
-    /// A key that identifies the GPU pipeline this template compiles to.
-    ///
-    /// In Step 8 the `PipelineCache` will map `(PipelineKey, TextureFormat)`
-    /// to a compiled `wgpu::RenderPipeline`. Because two materials share a
-    /// pipeline iff they use the same template, the key is simply the
-    /// template's `Handle` (already `Hash + Eq + Copy` from Step 5).
-    pub fn pipeline_key(&self) -> PipelineKey {
-        // The key is the *identity* of this template asset. We don't hash the
-        // template's structural fields because two distinct template instances
-        // with identical config should still be distinct keys (cheap, and
-        // avoids hashing nested structs on every lookup). If dedup-by-structure
-        // is ever wanted, derive it from `metadata` later.
-        PipelineKey { _private: () }
+    pub fn texture_layout(&self) -> &[crate::graphics::texture::TextureBinding] {
+        &self.metadata.texture_layout
     }
 }
 
@@ -69,18 +61,6 @@ impl Asset for MaterialTemplate {
     fn metadata(&self) -> &Self::Metadata {
         &self.metadata
     }
-}
-
-/// A key identifying a GPU pipeline. Opaque by design — its only producer is
-/// [`MaterialTemplate::pipeline_key`] and its only consumer will be the
-/// `PipelineCache` (Step 8). Internally it is backed by the template handle.
-//
-// Note: we keep this as a distinct type (rather than `Handle<MaterialTemplate>`)
-// so the pipeline cache API can evolve independently of the asset handle.
-// Step 8 will store `Handle<MaterialTemplate>` inside it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PipelineKey {
-    _private: (),
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -101,8 +81,33 @@ pub struct MaterialTemplateMetadata {
     pub depth_stencil: Option<DepthStencilConfig>,
     pub topology: Topology,
     /// Declares the uniform bindings the template's shaders expect. Drives
-    /// bind group layout creation (Step 8).
+    /// bind group layout creation and material load-time validation.
     pub uniform_layout: Vec<UniformBinding>,
+    pub texture_layout: Vec<crate::graphics::texture::TextureBinding>,
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+//  Loader — builds a MaterialTemplate from its metadata.
+//
+//  The metadata already carries resolved `Handle<Shader>`s for its shader
+//  dependencies (whoever constructed the metadata resolved them, e.g. by
+//  calling `ctx.assets.load::<Shader>(...)` first). So the loader's job is
+//  simply to wrap the metadata in a `MaterialTemplate` — no nested loading
+//  is needed here. This keeps the loader trivial.
+// ──────────────────────────────────────────────────────────────────────────
+
+pub struct MaterialTemplateLoader;
+
+impl AssetLoader for MaterialTemplateLoader {
+    type Asset = MaterialTemplate;
+
+    fn load(
+        &self,
+        metadata: MaterialTemplateMetadata,
+        _ctx: &LoadContext,
+    ) -> Result<MaterialTemplate, AssetError> {
+        Ok(MaterialTemplate::new(metadata))
+    }
 }
 
 /// Blend configuration. `None`-equivalent is `BlendMode::None` (no blending,
@@ -230,195 +235,209 @@ impl From<Topology> for wgpu::PrimitiveTopology {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-//  Uniforms — declaration (in metadata) and values (in Material instances).
-// ──────────────────────────────────────────────────────────────────────────
-
-/// Declares a single uniform binding as the template's shaders expect it.
-/// Drives bind group layout creation (Step 8).
-#[derive(Clone, Debug)]
-pub struct UniformBinding {
-    pub name: String,
-    pub ty: UniformType,
-    /// Bind group index + binding slot within that group. For V1 we use a
-    /// single bind group (group 0), so this is the binding slot within group 0.
-    pub binding_slot: u32,
-    pub visibility: ShaderStage,
-}
-
-/// The type of a uniform value. Grows as new shaders need more types.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UniformType {
-    Mat4,
-    Vec4,
-    F32,
-}
-
-impl UniformType {
-    /// Size in bytes of a value of this type — used to size uniform buffers.
-    pub fn size(&self) -> u64 {
-        match self {
-            UniformType::Mat4 => 64,
-            UniformType::Vec4 => 16,
-            UniformType::F32 => 4,
-        }
-    }
-}
-
-/// A runtime uniform value. Set on a `Material` instance via
-/// [`Material::set_uniform`]. Kept as a typed enum so the material can pack
-/// values into a uniform buffer without the caller worrying about layout.
-#[derive(Clone, Copy, Debug)]
-pub enum UniformValue {
-    Mat4(Mat4),
-    Vec4(Vec4),
-    F32(f32),
-}
-
-impl UniformValue {
-    pub fn ty(&self) -> UniformType {
-        match self {
-            UniformValue::Mat4(_) => UniformType::Mat4,
-            UniformValue::Vec4(_) => UniformType::Vec4,
-            UniformValue::F32(_) => UniformType::F32,
-        }
-    }
-
-    /// Writes the value into `bytes` at `offset` using WGSL's std140 layout.
-    pub fn write_bytes(&self, bytes: &mut [u8], offset: usize) {
-        match self {
-            UniformValue::Mat4(m) => {
-                let cols = m.to_cols_array();
-                bytes[offset..offset + 64].copy_from_slice(bytemuck::cast_slice(&cols));
-            }
-            UniformValue::Vec4(v) => {
-                let arr = v.to_array();
-                bytes[offset..offset + 16].copy_from_slice(bytemuck::cast_slice(&arr));
-            }
-            UniformValue::F32(x) => {
-                bytes[offset..offset + 4].copy_from_slice(bytemuck::cast_slice(&[*x]));
-            }
-        }
-    }
-}
-
-/// Which shader stage(s) a binding is visible from. Engine-native mirror of
-/// `wgpu::ShaderStages`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShaderStage {
-    Vertex,
-    Fragment,
-    Both,
-}
-
-impl From<ShaderStage> for wgpu::ShaderStages {
-    fn from(s: ShaderStage) -> Self {
-        match s {
-            ShaderStage::Vertex => wgpu::ShaderStages::VERTEX,
-            ShaderStage::Fragment => wgpu::ShaderStages::FRAGMENT,
-            ShaderStage::Both => wgpu::ShaderStages::VERTEX_FRAGMENT,
-        }
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-//  Material — a lightweight per-instance reference to a template plus the
+//  Material — an immutable per-instance reference to a template plus the
 //  per-instance uniform values and texture bindings. Many materials share
 //  one template (and thus one pipeline).
+//
+//  Materials are immutable: once loaded from metadata, they cannot be
+//  changed. To change a material, load a new one with new metadata. This
+//  removes the need for a `dirty` flag and keeps the metadata-is-identity
+//  invariant (important for future serialization, dedup, hot-reload).
+//
+//  The uniform values are stored typed (`HashMap<String, UniformValue>`) so
+//  the material is serializable. The GPU uniform buffer is a derived cache
+//  built by `MaterialUniformPool` / `BindGroupAllocator` — not stored here.
 // ──────────────────────────────────────────────────────────────────────────
 
-/// A per-instance material: a template handle plus the uniform values and
-/// texture bindings that vary between instances of the same template.
-///
-/// `dirty` tracks whether the uniform buffer / bind groups need rebuilding
-/// before the next draw (Step 8's `Material::ensure_bound` consumes it).
+/// An immutable material instance: a template handle plus the uniform
+/// values and texture bindings that vary between instances of the same
+/// template.
+#[derive(Clone)]
 pub struct Material {
-    template: Handle<MaterialTemplate>,
-    uniforms: HashMap<String, UniformValue>,
-    textures: HashMap<u32, Handle<crate::graphics::texture::Texture>>,
-    dirty: bool,
+    metadata: MaterialMetadata,
 }
 
 impl Material {
-    /// Creates a new material instance referencing `template` with no uniforms
-    /// or textures set yet.
+    pub fn template(&self) -> Handle<MaterialTemplate> {
+        self.metadata.template
+    }
+
+    pub fn texture(&self, binding: u32) -> Option<Handle<Texture>> {
+        self.metadata.textures.get(&binding).copied()
+    }
+
+    pub fn textures(&self) -> &HashMap<u32, Handle<Texture>> {
+        &self.metadata.textures
+    }
+
+    pub fn uniforms(&self) -> &HashMap<String, UniformValue> {
+        &self.metadata.uniforms
+    }
+}
+
+impl Asset for Material {
+    type Metadata = MaterialMetadata;
+
+    fn metadata(&self) -> &Self::Metadata {
+        &self.metadata
+    }
+}
+
+/// The metadata for a [`Material`]. Fully describes an immutable material
+/// instance: its template, uniform values (typed, keyed by name), and texture
+/// bindings (keyed by binding slot). This is the serialization source of truth
+/// — the GPU buffer and bind group are derived caches, not part of the
+/// metadata.
+#[derive(Clone)]
+pub struct MaterialMetadata {
+    template: Handle<MaterialTemplate>,
+    uniforms: HashMap<String, UniformValue>,
+    textures: HashMap<u32, Handle<Texture>>,
+}
+
+impl MaterialMetadata {
     pub fn new(template: Handle<MaterialTemplate>) -> Self {
         Self {
             template,
             uniforms: HashMap::new(),
             textures: HashMap::new(),
-            dirty: true,
         }
+    }
+
+    /// Builder: add a uniform value. The name must match a uniform declared
+    /// in the template's `uniform_layout`; this is validated at load time.
+    pub fn with_uniform(mut self, name: impl Into<String>, value: UniformValue) -> Self {
+        self.uniforms.insert(name.into(), value);
+        self
+    }
+
+    /// Builder: set a texture binding. The binding slot must match a texture
+    /// binding declared in the template's `texture_layout`; validated at load.
+    pub fn with_texture(mut self, binding: u32, texture: Handle<Texture>) -> Self {
+        self.textures.insert(binding, texture);
+        self
     }
 
     pub fn template(&self) -> Handle<MaterialTemplate> {
         self.template
     }
 
-    /// Sets a named uniform value. Marks the material `dirty` so Step 8's
-    /// `ensure_bound` rebuilds the uniform buffer before the next draw.
-    pub fn set_uniform(&mut self, name: impl Into<String>, value: UniformValue) {
-        self.uniforms.insert(name.into(), value);
-        self.dirty = true;
-    }
-
-    /// Sets the texture bound at `binding` (the bind group slot). Marks the
-    /// material `dirty` so Step 8's `ensure_bound` rebuilds the bind group.
-    pub fn set_texture(&mut self, binding: u32, texture: Handle<crate::graphics::texture::Texture>) {
-        self.textures.insert(binding, texture);
-        self.dirty = true;
-    }
-
-    pub fn uniform(&self, name: &str) -> Option<&UniformValue> {
-        self.uniforms.get(name)
-    }
-
-    pub fn texture(&self, binding: u32) -> Option<Handle<crate::graphics::texture::Texture>> {
-        self.textures.get(&binding).copied()
-    }
-
     pub fn uniforms(&self) -> &HashMap<String, UniformValue> {
         &self.uniforms
     }
 
-    pub fn textures(&self) -> &HashMap<u32, Handle<crate::graphics::texture::Texture>> {
+    pub fn textures(&self) -> &HashMap<u32, Handle<Texture>> {
         &self.textures
-    }
-
-    /// Whether the material's GPU resources (uniform buffer / bind groups)
-    /// need rebuilding before the next draw. Consumed by Step 8's
-    /// `Material::ensure_bound`.
-    pub fn is_dirty(&self) -> bool {
-        self.dirty
-    }
-
-    /// Clears the dirty flag (called by Step 8's `ensure_bound` after it has
-    /// rebuilt the GPU resources).
-    pub fn clear_dirty(&mut self) {
-        self.dirty = false;
     }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-//  Loader — builds a MaterialTemplate from its metadata.
+//  MaterialLoader — validates the material against its template at load time.
 //
-//  The metadata already carries resolved `Handle<Shader>`s for its shader
-//  dependencies (whoever constructed the metadata resolved them, e.g. by
-//  calling `ctx.assets.load::<Shader>(...)` first). So the loader's job is
-//  simply to wrap the metadata in a `MaterialTemplate` — no nested loading
-//  is needed here. This keeps the loader trivial.
+//  The loader resolves the `MaterialTemplate` via `ctx.assets.get_asset`,
+//  then validates every uniform and texture binding in the metadata against
+//  the template's layout. Validation failures produce
+//  `AssetError::DependencyValidationFailure` with the material name, the
+//  template name, and a human-readable reason. This ensures that by the time
+//  a `Material` exists in the asset store, it is guaranteed to match its
+//  template — draw-time never needs to handle mismatches.
 // ──────────────────────────────────────────────────────────────────────────
 
-pub struct MaterialTemplateLoader;
+pub struct MaterialLoader;
 
-impl AssetLoader for MaterialTemplateLoader {
-    type Asset = MaterialTemplate;
+impl AssetLoader for MaterialLoader {
+    type Asset = Material;
 
     fn load(
         &self,
-        metadata: MaterialTemplateMetadata,
-        _ctx: &LoadContext,
-    ) -> Result<MaterialTemplate, AssetError> {
-        Ok(MaterialTemplate::new(metadata))
+        metadata: MaterialMetadata,
+        ctx: &LoadContext<'_>,
+    ) -> Result<Material, AssetError> {
+        let template = ctx
+            .assets
+            .get_asset::<MaterialTemplate>(metadata.template)
+            .ok_or_else(|| AssetError::DependencyValidationFailure {
+                asset_name: "Material".to_string(),
+                dependency_name: "MaterialTemplate".to_string(),
+                reason: format!(
+                    "material template handle {:?} could not be resolved — the template must be loaded before the material",
+                    metadata.template
+                ),
+            })?;
+
+        // Validate uniforms: every uniform declared in the template must be
+        // provided with a value of the correct type, and no extra uniforms
+        // are allowed.
+        for binding in template.uniform_layout() {
+            match metadata.uniforms.get(&binding.name) {
+                None => {
+                    return Err(AssetError::DependencyValidationFailure {
+                        asset_name: "Material".to_string(),
+                        dependency_name: "MaterialTemplate".to_string(),
+                        reason: format!(
+                            "uniform `{}` is declared in the template but not provided in the material metadata",
+                            binding.name
+                        ),
+                    });
+                }
+                Some(value) => {
+                    if value.ty() != binding.ty {
+                        return Err(AssetError::DependencyValidationFailure {
+                            asset_name: "Material".to_string(),
+                            dependency_name: "MaterialTemplate".to_string(),
+                            reason: format!(
+                                "uniform `{}` type mismatch: template expects {:?}, material provides {:?}",
+                                binding.name,
+                                binding.ty,
+                                value.ty()
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        for name in metadata.uniforms.keys() {
+            if !template.uniform_layout().iter().any(|b| b.name == *name) {
+                return Err(AssetError::DependencyValidationFailure {
+                    asset_name: "Material".to_string(),
+                    dependency_name: "MaterialTemplate".to_string(),
+                    reason: format!(
+                        "uniform `{}` is provided in the material but not declared in the template",
+                        name
+                    ),
+                });
+            }
+        }
+
+        // Validate textures: every texture binding in the template must be
+        // provided, and no extra bindings are allowed.
+        for tex_binding in template.texture_layout() {
+            if !metadata.textures.contains_key(&tex_binding.texture_binding_slot) {
+                return Err(AssetError::DependencyValidationFailure {
+                    asset_name: "Material".to_string(),
+                    dependency_name: "MaterialTemplate".to_string(),
+                    reason: format!(
+                        "texture binding slot {} is declared in the template but not provided in the material metadata",
+                        tex_binding.texture_binding_slot
+                    ),
+                });
+            }
+        }
+
+        for slot in metadata.textures.keys() {
+            if !template.texture_layout().iter().any(|b| b.texture_binding_slot == *slot) {
+                return Err(AssetError::DependencyValidationFailure {
+                    asset_name: "Material".to_string(),
+                    dependency_name: "MaterialTemplate".to_string(),
+                    reason: format!(
+                        "texture binding slot {} is provided in the material but not declared in the template",
+                        slot
+                    ),
+                });
+            }
+        }
+
+        Ok(Material { metadata })
     }
 }
-

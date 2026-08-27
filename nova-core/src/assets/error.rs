@@ -16,6 +16,16 @@ pub enum AssetError {
     ImageError(image::ImageError),
     /// A generic, asset-specific loading failure with a human-readable cause.
     LoadingError(String),
+    /// Validation of an asset against a dependency failed at load time.
+    ///
+    /// For example, a `Material`'s uniforms or texture bindings do not match
+    /// its `MaterialTemplate`'s layout. Contains the asset name, the
+    /// dependency asset name, and a human-readable reason.
+    DependencyValidationFailure {
+        asset_name: String,
+        dependency_name: String,
+        reason: String,
+    },
 }
 
 impl From<io::Error> for AssetError {
@@ -49,6 +59,10 @@ impl fmt::Display for AssetError {
             ),
             AssetError::ImageError(e) => write!(f, "image decode error: {e}"),
             AssetError::LoadingError(msg) => write!(f, "asset loading error: {msg}"),
+            AssetError::DependencyValidationFailure { asset_name, dependency_name, reason } => write!(
+                f,
+                "validation of `{asset_name}` against dependency `{dependency_name}` failed: {reason}"
+            ),
         }
     }
 }

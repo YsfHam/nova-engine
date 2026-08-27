@@ -204,3 +204,18 @@ impl TextureLoader {
         texture
     }
 }
+
+#[derive(Clone, Debug)]
+pub struct TextureBinding {
+    pub multisampled: bool,
+    pub view_dimension: wgpu::TextureViewDimension,
+    pub sampler_binding_type: wgpu::SamplerBindingType,
+    pub texture_binding_slot: u32,
+    pub sample_binding_slot: u32,
+}
+
+impl TextureBinding {
+    pub fn is_filterable(&self) -> bool {
+        self.sampler_binding_type == wgpu::SamplerBindingType::Filtering
+    }
+}

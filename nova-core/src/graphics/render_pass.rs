@@ -1,8 +1,8 @@
-use crate::graphics::{color::Color, frame::Frame};
+use crate::graphics::{color::Color, render_target::RenderTarget};
 
 /// Describes how to configure a render pass.
 ///
-/// `color_view` defaults to the frame's surface view when `None`.
+/// `color_view` defaults to the render target's view when `None`.
 ///
 /// `color_clear`: `Some(color)` clears the target to `color`; `None` loads existing content.
 /// `depth_clear`: `Some(value)` clears depth to `value` (typically `1.0`); `None` = no depth attachment.
@@ -36,7 +36,7 @@ impl<'a> RenderPassDescriptor<'a> {
         self
     }
 
-    /// Render to a custom texture view instead of the frame's surface view.
+    /// Render to a custom texture view instead of the render target's view.
     pub fn with_color_view(mut self, view: &'a wgpu::TextureView) -> Self {
         self.color_view = Some(view);
         self
@@ -55,17 +55,18 @@ impl<'a> Default for RenderPassDescriptor<'a> {
     }
 }
 
-/// A scoped render pass recording context. Borrows the `Frame` mutably while alive,
-/// so only one pass can be active at a time (wgpu requirement).
+/// A scoped render pass recording context. Borrows the `RenderTarget` mutably
+/// while alive, so only one pass can be active at a time (wgpu requirement).
 pub struct RenderPass<'frame> {
-    inner: wgpu::RenderPass<'frame>,
+    pub(crate) inner: wgpu::RenderPass<'frame>,
 }
 
 impl<'frame> RenderPass<'frame> {
-    pub fn new(frame: &'frame mut Frame<'_>, desc: RenderPassDescriptor<'_>) -> Self {
-        let color_view = desc.color_view.unwrap_or(&frame.view);
 
-        let color_attachment = Some(wgpu::RenderPassColorAttachment {
+    pub fn new(render_target: &'frame mut RenderTarget<'_>, desc: RenderPassDescriptor<'frame>) -> Self {
+        let color_view = desc.color_view.unwrap_or(render_target.view);
+
+        let color_attachment = wgpu::RenderPassColorAttachment {
             view: color_view,
             resolve_target: None,
             depth_slice: None,
@@ -76,34 +77,34 @@ impl<'frame> RenderPass<'frame> {
                 },
                 store: wgpu::StoreOp::Store,
             },
-        });
+        };
+        let color_attachments = [Some(color_attachment)];
 
         // Depth attachment: for now, depth_clear only signals intent.
         // The actual depth texture view comes from the depth pool (Step 2/C6).
         // Until the pool exists, depth_clear is accepted but not wired.
-        let depth_stencil_attachment: Option<wgpu::RenderPassDepthStencilAttachment> =
-            desc.depth_clear.map(|depth| {
-                wgpu::RenderPassDepthStencilAttachment {
-                    // TODO: replace with depth texture from pool once implemented
-                    view: &frame.view, // placeholder — will panic if used; see note
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(depth),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }
-            });
+        let depth_stencil_attachment = desc.depth_clear.map(|depth| {
+            wgpu::RenderPassDepthStencilAttachment {
+                // TODO: replace with depth texture from pool once implemented
+                view: render_target.view, // placeholder — will panic if used; see note
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(depth),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }
+        });
 
-        let inner = frame.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let inner = render_target.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: desc.label,
-            color_attachments: &[color_attachment],
+            color_attachments: &color_attachments,
             depth_stencil_attachment,
             occlusion_query_set: None,
             timestamp_writes: None,
             multiview_mask: None,
         });
 
-        Self { inner }
+        Self {inner}
     }
 
     // --- Draw methods (thin wrappers over wgpu::RenderPass) ---

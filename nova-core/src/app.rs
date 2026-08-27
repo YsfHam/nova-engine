@@ -7,7 +7,7 @@ mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::AssetsManager, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, material::MaterialTemplateLoader, render::RenderContext, sampler::SamplerLoader, shader::ShaderLoader, texture::TextureLoader}, time::Clock, window::WindowApi};
+use crate::{EngineResult, assets::AssetsManager, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, material::{MaterialLoader, MaterialTemplateLoader}, render::RenderContext, render_target::RenderTarget, sampler::SamplerLoader, shader::ShaderLoader, texture::TextureLoader}, time::Clock, window::WindowApi};
 
 pub struct ApplicationContext {
     window_api: WindowApi,
@@ -24,7 +24,7 @@ impl ApplicationContext {
 pub trait ApplicationProxy {
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()>;
     fn on_update(&mut self, ctx: &mut ApplicationContext, dt: Duration);
-    fn on_render(&mut self, ctx: &ApplicationContext, frame: &mut Frame);
+    fn on_render(&mut self, ctx: &ApplicationContext, target: &mut RenderTarget<'_>);
 }
 
 pub struct Application<P: ApplicationProxy> {
@@ -96,5 +96,6 @@ impl<P: ApplicationProxy> Application<P> {
         assets_manager.register_loader(SamplerLoader);
         assets_manager.register_loader(TextureLoader);
         assets_manager.register_loader(MaterialTemplateLoader);
+        assets_manager.register_loader(MaterialLoader);
     }
 }

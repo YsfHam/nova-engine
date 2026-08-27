@@ -4,6 +4,7 @@ use crate::assets::{error::AssetError, handle::Handle, load::{AssetLoadersStorag
 pub mod handle;
 pub mod load;
 pub mod error;
+pub mod resolve;
 mod storage;
 
 /// An asset stored in the [`AssetsManager`].

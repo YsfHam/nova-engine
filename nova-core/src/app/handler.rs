@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow}};
 
-use crate::{EngineResult, app::{Application, ApplicationContext, ApplicationProxy}};
+use crate::{EngineResult, app::{Application, ApplicationContext, ApplicationProxy}, graphics::render_target::RenderTarget};
 
 impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -71,12 +71,15 @@ impl<P: ApplicationProxy> Application<P> {
 
     fn on_render(proxy: &mut P, ctx: &mut ApplicationContext) -> EngineResult<()> {
         let mut render_ctx = ctx.render_ctx.borrow_mut();
-        let frame_opt= render_ctx.begin_frame()?;
+        let frame_opt = render_ctx.begin_frame()?;
 
-        frame_opt.map(|mut frame| {
-            proxy.on_render(ctx, &mut frame);
-            frame.submit();
-        });
+        if let Some(frame) = frame_opt {
+            let mut target = RenderTarget::new(&mut render_ctx, frame.view());
+            proxy.on_render(ctx, &mut target);
+            target.submit();
+            let queue = render_ctx.queue().clone();
+            frame.present(&queue);
+        }
         
         Ok(())
     }
