@@ -69,14 +69,14 @@ nova-engine/
 | `WindowApi` | Window abstraction — shared |
 | `AppContext`, `ApplicationProxy` | Application entry point — shared |
 | `DrawBatch` | The dimension-agnostic submission contract |
-| `UniformArena` | Per-frame transient uniform uploads (camera, scene globals) |
+| `UniformArena` | Per-render-target transient buffer for scene-global uniforms (camera, time). Group 0. |
 | Default WGSL shaders | Embedded via `include_str!`, registered at init |
 
 **`nova-2d` (2D-specific helpers):**
 
 | Component | Why it's here |
 |-----------|---------------|
-| `Render2D` | Frame-scoped borrower — 2D command API |
+| `Render2D` | Render-target-scoped borrower — 2D command API |
 | `QuadCmd` | 2D render command |
 | `BatchKey2D` | 2D sort key (template + texture) |
 | `Batcher2D` | Collects, sorts, flushes 2D commands |
@@ -89,7 +89,7 @@ nova-engine/
 
 | Component | Why it's here |
 |-----------|---------------|
-| `Render3D` | Frame-scoped borrower — 3D command API |
+| `Render3D` | Render-target-scoped borrower — 3D command API |
 | `MeshCmd` | 3D render command |
 | `BatchKey3D` | 3D sort key (template + mesh + material) |
 | `Batcher3D` | Collects, sorts (depth for transparency), flushes 3D commands |
@@ -104,19 +104,20 @@ nova-engine/
 
 `RenderContext` (in core) owns the GPU plumbing: pipeline cache, bind group allocator, frame lifecycle. It is **dimension-agnostic** — it knows nothing about quads, meshes, or sprites.
 
-Batchers (`Batcher2D`, `Batcher3D`) are **dimension-specific** and live in `nova-2d` / `nova-3d`. They collect commands, sort them, and produce `DrawBatch` structs that they hand to `Frame::submit_draw_batch()`.
+Batchers (`Batcher2D`, `Batcher3D`) are **dimension-specific** and live in `nova-2d` / `nova-3d`. They collect commands, sort them, and produce `DrawBatch` structs that they hand to `RenderTarget::submit_draw_batch()`.
 
 ```
 Render2D::draw_quad(cmd)                      Render3D::draw_mesh(cmd)
   → Batcher2D: collect cmd                      → Batcher3D: collect cmd
   → (at frame end) Batcher2D: sort              → (at frame end) Batcher3D: sort
   → Batcher2D: flush                            → Batcher3D: flush
-    → Frame::submit_draw_batch(DrawBatch)         → Frame::submit_draw_batch(DrawBatch)
+    → RenderTarget::submit_draw_batch(DrawBatch)     → RenderTarget::submit_draw_batch(DrawBatch)
       → pipeline cache lookup (RenderContext)      → pipeline cache lookup (RenderContext)
       → bind group creation (RenderContext)        → bind group creation (RenderContext)
-      → uniform arena (frame-scoped)               → uniform arena (frame-scoped)
-      → command encoder (frame-scoped)             → command encoder (frame-scoped)
-    → (on Frame::drop) GPU submit + present        → (on Frame::drop) GPU submit + present
+      → uniform arena (render-target-scoped)        → uniform arena (render-target-scoped)
+      → command encoder (render-target-scoped)      → command encoder (render-target-scoped)
+    → (on RenderTarget::submit) GPU submit        → (on RenderTarget::submit) GPU submit
+    → (after submit) Frame::present()              → (after submit) Frame::present()
 ```
 
 This keeps core clean: it only knows about `DrawBatch`, never `QuadCmd` or `MeshCmd`.
@@ -133,22 +134,28 @@ This keeps core clean: it only knows about `DrawBatch`, never `QuadCmd` or `Mesh
 │  └── User code (scenes, game logic, etc.)                 │
 ├──────────────────────────────────────────────────────────┤
 │  High-Level Renderer                 [nova-2d / nova-3d]  │
-│  ├── Render2D / Render3D (borrow Frame, commands)         │
+│  ├── Render2D / Render3D (borrow RenderTarget, commands) │
 │  ├── Batcher2D / Batcher3D (dimension-specific sorting)   │
 │  └── Command structures (QuadCmd, MeshCmd, etc.)          │
 ├──────────────────────────────────────────────────────────┤
-│  Frame & RenderPass                  [nova-core]         │
-│  ├── Frame (surface texture + encoder + uniform arena)    │
-│  ├── RenderPass (scoped recording, borrows Frame mutably) │
+│  RenderTarget & RenderPass          [nova-core]         │
+│  ├── RenderTarget (view + encoder + uniform arena)        │
+│  ├── RenderPass (scoped recording, borrows RenderTarget)  │
 │  ├── submit_draw_batch() — the contract for batchers      │
-│  └── Drop: flush uploads + submit + present               │
+│  ├── borrows &mut RenderContext (pipeline + bind group)  │
+│  └── submit() — encoder.finish + queue.submit             │
+├──────────────────────────────────────────────────────────┤
+│  Frame                               [nova-core]         │
+│  ├── Surface texture + view (for RenderTarget)            │
+│  └── present() — surface present                         │
 ├──────────────────────────────────────────────────────────┤
 │  RenderContext                        [nova-core]         │
 │  ├── Pipeline cache (keyed by MaterialTemplate)           │
-│  ├── Bind group allocator                                 │
+│  ├── Bind group allocator + MaterialUniformPool           │
+│  ├── Scene bind group layout (group 0 singleton)         │
 │  ├── begin_frame() → Frame                                │
 │  ├── Surface management (resize, recover, present mode)   │
-│  └── Holds: Arc<GraphicsContext> (via Mutex)              │
+│  └── Holds: GraphicsContext                                │
 ├──────────────────────────────────────────────────────────┤
 │  GraphicsContext                      [nova-core]         │
 │  ├── wgpu::Surface / Device / Queue / Config              │
@@ -170,17 +177,18 @@ This keeps core clean: it only knows about `DrawBatch`, never `QuadCmd` or `Mesh
 | Layer | Crate | Owns | Knows About | Exposes To Above |
 |-------|-------|------|-------------|------------------|
 | `GraphicsContext` | nova-core | GPU device, queue, surface | wgpu only | Raw GPU access (to `RenderContext` only) |
-| `RenderContext` | nova-core | Pipeline cache, bind group allocator, surface | `GraphicsContext` + asset handles | `begin_frame()` → `Frame`, `device()`/`queue()` accessors |
-| `Frame` | nova-core | Surface texture, command encoder, uniform arena, frame index | `RenderContext` (borrowed) | `begin_pass()`, `submit_draw_batch()` (to batchers) |
-| `RenderPass` | nova-core | Scoped wgpu render pass recording | `Frame` (borrowed mutably) | Draw methods (to high-level renderer) |
-| High-Level Renderer | nova-2d / nova-3d | Command collection, batching, sorting | `Frame` + `RenderPass` API | `Render2D`/`Render3D` borrowers (to Application) |
+| `RenderContext` | nova-core | Pipeline cache, bind group allocator, scene bind group layout, `MaterialUniformPool`, surface | `GraphicsContext` + asset handles | `begin_frame()` → `Frame`, `device()`/`queue()` accessors |
+| `Frame` | nova-core | Surface texture + view | — | `view()` (to `RenderTarget`), `present()` |
+| `RenderTarget` | nova-core | Command encoder, uniform arena | `RenderContext` (borrowed mutably) | `begin_render_pass()`, `submit_draw_batch()`, `upload_uniform()` (to batchers) |
+| `RenderPass` | nova-core | Scoped wgpu render pass recording | `RenderTarget` (borrowed mutably) | Draw methods (to high-level renderer) |
+| High-Level Renderer | nova-2d / nova-3d | Command collection, batching, sorting | `RenderTarget` + `RenderPass` API | `Render2D`/`Render3D` borrowers (to Application) |
 | Application | user crate | Scene state, game logic | `AppContext` | Nothing — this is the top |
 
 **Key rules:**
 - No layer reaches below its own level. Application never sees `wgpu`. High-level renderer never touches `wgpu` directly — it goes through `Frame` / `RenderPass`.
-- `nova-2d` and `nova-3d` never import `wgpu`. They go through `Frame`'s API.
+- `nova-2d` and `nova-3d` never import `wgpu`. They go through `RenderTarget` / `RenderPass`.
 - `nova-core` does not know about `QuadCmd`, `MeshCmd`, `BatchKey2D`, or `BatchKey3D`. It only knows about `DrawBatch`.
-- `RenderContext` is long-lived (created once at startup). `Frame` is short-lived (created and dropped each frame). This separation prevents stale frame state from leaking between frames.
+- `RenderContext` is long-lived (created once at startup). `RenderTarget` is short-lived (created and submitted each render target scope). `Frame` is short-lived (surface texture lifecycle). This separation prevents stale frame state from leaking between frames.
 
 ---
 
@@ -217,10 +225,10 @@ The public hub for all rendering. Sits between `GraphicsContext` and the high-le
 
 ```rust
 pub struct RenderContext {
-    inner: Mutex<GraphicsContext>,     // Arc-wrapped for shared ownership
-    pipeline_cache: PipelineCache,     // keyed by PipelineKey (from MaterialTemplate)
-    bind_group_allocator: BindGroupAllocator,
-    // future: depth_texture_pool, default material templates
+    gfx: GraphicsContext,                      // owns the GPU connection
+    scene_bind_group_layout: wgpu::BindGroupLayout, // singleton group 0 layout
+    pipeline_cache: PipelineCache,             // keyed by (Handle<MaterialTemplate>, TextureFormat)
+    bind_group_allocator: BindGroupAllocator,  // per-material bind group cache + MaterialUniformPool
 }
 ```
 
@@ -228,20 +236,22 @@ pub struct RenderContext {
 
 ### 5.3 Responsibilities
 
-- **Pipeline cache**: Compiles and caches `wgpu::RenderPipeline` objects, keyed by `PipelineKey` (derived from `MaterialTemplate` properties + target format). First encounter with a new template triggers compilation; subsequent materials using the same template reuse the cached pipeline.
-- **Bind group allocator**: Creates and manages `wgpu::BindGroup` objects from material instance data. Allocates from pooled descriptor sets to avoid per-frame allocation churn.
-- **Frame lifecycle**: `begin_frame()` acquires the current surface texture, creates a command encoder, and returns a `Frame` object that scopes all frame-specific data. The `Frame`'s `Drop` impl submits and presents.
-- **Surface management**: Resize, reconfigure, recover from loss (replace `panic!("surface lost")` with reconfigure + skip frame). Configurable present mode.
+- **Pipeline cache**: Compiles and caches `wgpu::RenderPipeline` objects, keyed by `(Handle<MaterialTemplate>, TextureFormat)`. First encounter with a new template triggers compilation; subsequent materials using the same template reuse the cached pipeline.
+- **Bind group allocator**: Owns the `MaterialUniformPool` (shared buffer for all material uniforms) and a `HashMap<Handle<Material>, wgpu::BindGroup>` cache. Materials are immutable → bind groups built once, cached forever.
+- **Scene bind group layout**: Singleton group 0 layout (binding 0 = camera Mat4, binding 1 = time F32). Every pipeline includes this as its first bind group layout. `UniformArena` builds one bind group per render target.
+- **Frame lifecycle**: `begin_frame()` acquires the current surface texture, creates a view, and returns a lightweight `Frame`. The caller creates a `RenderTarget` from `&mut RenderContext` + the view, draws into it, calls `submit()`, then `Frame::present()`.
+- **Surface management**: Resize, reconfigure, recover from loss. Configurable present mode.
 - **Resource accessors**: `device()`, `queue()`, `surface_format()` — the escape hatch for advanced/crate-internal use (e.g., asset loaders, `nova-2d`/`nova-3d` vertex buffer creation).
 
 ### 5.4 Public API (V1)
 
 | Method | Description |
 |--------|-------------|
-| `device() -> MutexGuard<GraphicsContext>` (or accessor) | Access to `wgpu::Device` (for resource creation) |
-| `queue() -> ...` | Access to `wgpu::Queue` (for buffer/texture writes) |
+| `device() -> &wgpu::Device` | Access to `wgpu::Device` (for resource creation) |
+| `queue() -> &wgpu::Queue` | Access to `wgpu::Queue` (for buffer/texture writes) |
 | `surface_format() -> TextureFormat` | Current surface format (needed for pipeline creation) |
-| `begin_frame() -> Frame` | Acquire surface texture, create view, return `Frame` |
+| `scene_bind_group_layout() -> &BindGroupLayout` | Group 0 layout (for the `UniformArena`) |
+| `begin_frame() -> Option<Frame>` | Acquire surface texture, create view, return `Frame` |
 | `resize(width, height)` | Reconfigure surface on window resize |
 
 ### 5.5 Interior Mutability
@@ -250,148 +260,169 @@ Because `RenderContext` is shared via `Arc`, all methods take `&self`. Mutable s
 
 ---
 
-## 6. Frame & RenderPass
+## 6. Frame, RenderTarget & RenderPass
 
-### 6.1 Frame — Per-Frame Unit
+### 6.1 Frame — Surface Lifecycle
 
-Created by `RenderContext::begin_frame()`, consumed by `submit()` (or `Drop`). **Short-lived — RAII frame boundary.**
+Created by `RenderContext::begin_frame()`. **Lightweight** — owns only the surface texture and its view. The caller passes the view to a `RenderTarget` and calls `present()` after the render target is submitted.
 
 ```rust
-pub struct Frame<'a> {
-    renderer: &'a RenderContext,
-    view: wgpu::TextureView,              // surface texture view (or off-screen target)
-    encoder: wgpu::CommandEncoder,         // owned, built up during the frame
-    uniform_arena: UniformArena,          // per-frame uniform uploads (camera, scene globals)
-    color_format: wgpu::TextureFormat,
-    depth_format: Option<wgpu::TextureFormat>,
-    frame_index: u64,                      // increments each frame (for double-buffering)
+pub struct Frame {
+    output: wgpu::SurfaceTexture,
+    view: wgpu::TextureView,
+}
+
+impl Frame {
+    pub fn view(&self) -> &wgpu::TextureView;
+    pub fn present(self, queue: &wgpu::Queue);
 }
 ```
 
-**What lives in `Frame` (per-frame, transient):**
-- The acquired surface texture view (target for rendering)
+`Frame` has no lifetime tied to `RenderContext` and no GPU command state. It exists only for on-screen rendering; off-screen rendering creates a `RenderTarget` directly from an arbitrary `TextureView`.
+
+### 6.2 RenderTarget — View-Agnostic Rendering
+
+`RenderTarget` is the view-agnostic rendering scope. It borrows `&mut RenderContext` for direct mutable access to the pipeline cache and bind group allocator (no `RefCell`), owns the command encoder and the per-target `UniformArena`, and works for both on-screen and off-screen rendering.
+
+```rust
+pub struct RenderTarget<'a> {
+    render_ctx: &'a mut RenderContext,
+    view: &'a wgpu::TextureView,
+    encoder: wgpu::CommandEncoder,
+    uniform_arena: UniformArena,
+}
+```
+
+**Why `RenderTarget` borrows `&mut RenderContext`:** The pipeline cache and bind group allocator need mutable access during a frame (compile/cache pipelines, build/cached bind groups). `RenderTarget` holding `&mut RenderContext` gives direct field access — no `RefCell`, no guard types, references returned from the cache are tied to the `RenderTarget` borrow lifetime.
+
+**What lives on `RenderTarget` (per-render-target, transient):**
+- The target texture view (surface or off-screen)
 - The command encoder (all draw commands recorded into this)
-- The uniform arena (staging buffers for uniform data uploaded this frame)
-- Frame index (for double/triple-buffering schemes)
-- Per-frame allocation pools (transient bind groups, temporary buffers)
+- The uniform arena (scene-global uniforms for this render target)
 
 **What stays in `RenderContext` (persistent, shared across frames):**
 - `GraphicsContext` (the GPU connection)
 - Pipeline cache (pipelines persist across frames)
-- Bind group allocator (the allocator pool persists; individual bind groups are per-frame)
+- Bind group allocator (bind group cache persists; individual bind groups are cached per-material, immutable)
+- Scene bind group layout (singleton group 0 layout)
 
 **Lifecycle:**
 
 ```rust
 impl RenderContext {
-    pub fn begin_frame(&self) -> Frame<'_> {
-        let surface_texture = self.acquire_surface_texture(); // handles loss/Outdated
-        let view = surface_texture.texture.create_view(&Default::default());
-        let encoder = self.device().create_command_encoder(/* ... */);
-        Frame {
-            renderer: self,
-            view,
-            encoder,
-            uniform_arena: UniformArena::new(),
-            color_format: self.surface_format(),
-            depth_format: self.depth_format(),
-            frame_index: self.next_frame_index(),
-        }
+    pub fn begin_frame(&mut self) -> EngineResult<Option<Frame>> {
+        let output = self.get_surface_texture()?; // handles loss/Outdated
+        Ok(Some(Frame::new(output)))
     }
 }
 
-impl<'a> Drop for Frame<'a> {
-    fn drop(&mut self) {
-        // 1. Flush uniform arena — submit remaining staging buffers
-        self.uniform_arena.flush(&self.renderer.queue());
-        // 2. Submit the command encoder
-        let cmd = self.encoder.finish();
-        self.renderer.queue().submit(std::iter::once(cmd));
-        // 3. Present the surface texture
-        self.surface_texture.present();
-    }
-}
+// On-screen rendering (in handler.rs):
+let frame = render_ctx.begin_frame()?;
+let mut target = RenderTarget::new(&mut render_ctx, frame.view());
+proxy.on_render(ctx, &mut target);
+target.submit();                    // encoder.finish() + queue.submit()
+let queue = render_ctx.queue().clone();
+frame.present(&queue);             // surface present
+
+// Off-screen rendering (future):
+let mut target = RenderTarget::new(&mut render_ctx, offscreen_view);
+// ... draw into target ...
+target.submit();                    // encoder.finish() + queue.submit (no present)
 ```
 
-The `Drop` impl ensures the frame is always properly submitted and presented, even if the user panics.
-
-### 6.2 RenderPass — Recording Scope
+### 6.3 RenderPass — Recording Scope
 
 ```rust
 pub struct RenderPass<'frame> {
-    // wraps wgpu::RenderPass<'frame>
-    // borrows Frame mutably so only one pass is active at a time (wgpu rule)
+    inner: wgpu::RenderPass<'frame>,  // borrows RenderTarget mutably
 }
 ```
 
-- `begin_pass(desc) -> RenderPass` — opens a render pass on the frame's view (or a provided off-screen target).
+- `RenderTarget::begin_render_pass(desc) -> RenderPass` — opens a render pass on the render target's view (or a provided off-screen target).
 - `set_pipeline(&mut self, &Pipeline)`
 - `set_bind_group(&mut self, index, &BindGroup)`
 - `set_vertex_buffer`, `set_index_buffer`
 - `draw(...)`, `draw_indexed(...)`
-- `draw_material(&mut self, &Material, ...)` — convenience: binds pipeline + bind groups + draws.
+- `draw_material(&mut self, &Material, ...)` — convenience (Step 9): binds pipeline + bind groups + draws.
 
 2D and 3D renderers build higher-level helpers on top of this (e.g., `SpriteBatch::flush(&mut self, pass: &mut RenderPass)`).
 
-### 6.3 Off-Screen Rendering
+### 6.4 Off-Screen Rendering
 
-`begin_pass` accepts an arbitrary `TextureView`, not just the surface view. The surface view is the default. This enables post-processing and render-to-texture for 3D without changing the API.
+`RenderTarget` is view-agnostic: `new(render_ctx, view)` accepts any `TextureView`. This enables post-processing and render-to-texture for 3D without changing the API — just create a `RenderTarget` with an off-screen view.
 
-### 6.4 UniformArena
+### 6.5 Uniform System — Two Sources, Two Bind Groups
 
-Per-frame uniform uploads for scene-global data (camera matrices, time, transforms) that doesn't belong in `Material`.
+Uniforms come from two distinct sources with two bind groups:
+
+| Concern | Owner | Lifetime | Bind group | Serializable |
+|---------|-------|----------|------------|--------------|
+| Scene globals (camera, time, lights) | `UniformArena` on `RenderTarget` | one render target scope | **group 0** | no — runtime state |
+| Per-material params (color, transform) | `Material` (immutable, typed values) | lives with the asset | **group 1** | yes — typed `UniformValue`s |
+
+**Group 0 (environment):** Singleton layout on `RenderContext` (binding 0 = camera Mat4, binding 1 = time F32). `UniformArena` builds one bind group per render target via `build_bind_group()`. Cameras call `RenderTarget::upload_uniform(binding_slot, value)`.
+
+**Group 1 (material):** Layout derived from `MaterialTemplateMetadata` (uniform_layout + texture_layout). `MaterialUniformPool` holds a shared persistent `wgpu::Buffer` for all material uniforms (batch-built). `BindGroupAllocator` caches per-material `wgpu::BindGroup` keyed by `Handle<Material>` — immutable materials mean bind groups are built once, never invalidated.
+
+### 6.6 UniformArena
+
+Per-render-target uniform uploads for scene-global data (camera matrices, time, transforms) that doesn't belong in `Material`.
 
 ```rust
-impl Frame {
-    fn upload_uniform(&mut self, bytes: &[u8]) -> BindGroupEntry;
+impl UniformArena {
+    pub fn upload(&mut self, binding_slot: u32, value: UniformValue);
+    pub fn build_bind_group(&mut self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Option<wgpu::BindGroup>;
+    pub fn reset(&mut self);
 }
 ```
 
-- Both `Camera2D` and `Camera3D` produce matrices and call `upload_uniform(...)`.
-- Arena is reset each frame.
-- Shared infrastructure in `nova-core` — camera types are just producers of uniform bytes.
+- Both `Camera2D` and `Camera3D` produce matrices and call `upload_uniform(...)`. `UniformValue` is typed (Mat4/Vec4/F32), not raw bytes — so the arena can rebuild the buffer when invalidated.
+- Arena builds one bind group (group 0) per render target.
 
-### 6.5 submit_draw_batch — The Contract
+### 6.7 MaterialUniformPool
+
+Shared, persistent `wgpu::Buffer` for all material uniforms. Batch-built from an iterator of materials.
 
 ```rust
-impl<'a> Frame<'a> {
+impl MaterialUniformPool {
+    pub fn build<'a, I>(&mut self, device: &wgpu::Device, materials: I)
+        where I: IntoIterator<Item = MaterialUniformEntry<'a>>;
+    pub fn buffer(&self) -> Option<&wgpu::Buffer>;
+    pub fn allocation(&self, handle: Handle<Material>) -> Option<UniformAllocation>;
+}
+```
+
+- The caller (the entity setting up the render pass) controls when to (re)build: first frame or after materials added/removed.
+- Each material gets a fixed `(offset, size)` allocation that never moves (materials are immutable, append-only).
+
+### 6.8 submit_draw_batch — The Contract
+
+```rust
+impl<'a> RenderTarget<'a> {
     pub fn submit_draw_batch(&mut self, batch: DrawBatch) {
         // 1. Look up pipeline from RenderContext's pipeline cache
-        let pipeline = self.renderer.pipeline_cache.get_or_compile(
-            &batch.template_key, &self.renderer.device()
-        );
-        // 2. Create bind groups from material data
-        let bind_groups = self.renderer.bind_group_allocator.create(&batch.material);
-        // 3. Upload uniform data via frame's uniform arena
-        self.uniform_arena.upload_uniforms(&batch.uniform_data);
-        // 4. Record render pass commands into the frame's command encoder
-        let mut pass = self.encoder.begin_render_pass(&batch.render_pass_descriptor);
-        pass.set_pipeline(pipeline);
-        for (i, bg) in bind_groups.iter().enumerate() {
-            pass.set_bind_group(i as u32, bg, &[]);
-        }
-        pass.set_vertex_buffer(0, batch.vertex_buffer.slice(..));
-        pass.draw(0..batch.vertex_count, 0..batch.instance_count);
+        let pipeline = self.get_or_compile_pipeline(batch.template);
+        // 2. Get or create bind group from the bind group allocator
+        let bind_group = self.get_or_create_bind_group(batch.material, pipeline.bind_group_layout);
+        // 3. Record render pass commands
+        // ...
     }
 }
 ```
 
 This is the dimension-agnostic submission interface. `Batcher2D` and `Batcher3D` both call it — they just produce different `DrawBatch` instances from different command types.
 
-### 6.6 DrawBatch
+### 6.9 DrawBatch
 
-The contract struct between dimension-specific batchers and the dimension-agnostic `RenderContext`:
+The contract struct between dimension-specific batchers and the dimension-agnostic `RenderTarget`:
 
 ```rust
 pub struct DrawBatch {
-    pub template_key: PipelineKey,       // derived from MaterialTemplate
-    pub material: Material,              // or Handle<Material> + material data
-    pub bind_groups: Vec<wgpu::BindGroup>,
-    pub vertex_buffer: wgpu::Buffer,     // or a reference to a pooled buffer
+    pub template_key: PipelineCacheKey,  // derived from MaterialTemplate
+    pub material: Handle<Material>,       // material to bind
+    pub vertex_buffer: wgpu::Buffer,
     pub vertex_count: u32,
     pub instance_count: u32,
-    pub uniform_data: Vec<u8>,           // per-batch uniform uploads
-    pub render_pass_descriptor: wgpu::RenderPassDescriptor<'static>,
 }
 ```
 
@@ -423,7 +454,7 @@ An **asset** is any long-lived engine resource that:
 - `LightSystem` / `SceneUniforms` — per-frame global uniforms.
 - `SpriteBatch` / `MeshRenderer` — transient per-frame command collectors.
 - `QuadCmd` / `MeshCmd` — ephemeral render commands.
-- `Frame` / `RenderPass` — per-frame scope objects.
+- `Frame` / `RenderTarget` / `RenderPass` — per-frame scope objects.
 
 The distinction: **if it persists across frames and is shared by reference, it's an asset. If it's reconstructed every frame or scoped to a frame, it's not.**
 
@@ -563,12 +594,14 @@ The core of the material model. **`MaterialTemplate` is the recipe (an asset); `
 
 Loaded once, shared by reference (via `Handle<MaterialTemplate>`). Goes through the asset system, has a loader, is stored in `AssetStorage`. Drives pipeline compilation.
 
-**`Material` (the instance — lightweight):**
+**`Material` (the instance — immutable):**
 - `Handle<MaterialTemplate>` — reference to the recipe
-- Unique uniform values (the actual data for each uniform defined in the template)
-- Texture bindings (handles to `Texture` assets)
+- Unique uniform values (`HashMap<String, UniformValue>` — typed, serializable)
+- Texture bindings (`HashMap<u32, Handle<Texture>>`)
 
-A `Material` is almost free to create — it's just a handle + a small bag of values. You can spawn thousands of them without worrying about pipeline state duplication.
+Materials are **immutable**: once loaded from metadata, they cannot be changed. No `dirty` flag, no mutators. To change a material, load a new one. This removes the invalidation path — the GPU uniform buffer and bind group are derived caches built once, never rebuilt.
+
+The GPU-derived state (uniform buffer offset, bind group) is **not stored on the `Material`** — it lives in the `BindGroupAllocator` / `MaterialUniformPool` on `RenderContext`. This keeps the `Material` pure data (serializable) and the GPU state in the renderer layer.
 
 ```rust
 pub struct MaterialTemplate {
@@ -583,16 +616,17 @@ pub struct MaterialTemplateMetadata {
     pub depth_stencil: Option<DepthStencilConfig>,
     pub topology: Topology,                   // engine-native
     pub uniform_layout: Vec<UniformBinding>,
+    pub texture_layout: Vec<TextureBinding>,
 }
 
 pub struct Material {
+    metadata: MaterialMetadata,
+}
+
+pub struct MaterialMetadata {
     template: Handle<MaterialTemplate>,
-    uniforms: HashMap<String, UniformValue>,  // keyed by name
+    uniforms: HashMap<String, UniformValue>,  // typed, keyed by name
     textures: HashMap<u32, Handle<Texture>>,  // keyed by binding slot
-    dirty: bool,
-    // Derived, cached (per-instance) — added in Step 8:
-    // uniform_buffer: Option<wgpu::Buffer>,
-    // bind_groups: Vec<Option<wgpu::BindGroup>>,
 }
 ```
 
@@ -620,23 +654,21 @@ Template handle replaces the old `shader` field. Since templates are assets with
 
 ### 8.3 PipelineKey
 
-The `MaterialTemplate` produces (or contributes to) the `PipelineKey` directly:
+The `PipelineCache` keys off `(Handle<MaterialTemplate>, TextureFormat)`:
 
 ```rust
-impl MaterialTemplate {
-    pub fn pipeline_key(&self) -> PipelineKey {
-        // The key is the identity of this template asset. Step 8 will back
-        // PipelineKey with Handle<MaterialTemplate> (already Hash + Eq + Copy).
-        PipelineKey { _private: () }
-    }
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct PipelineCacheKey {
+    material_template_handle: Handle<MaterialTemplate>,
+    target_format: wgpu::TextureFormat,
 }
 ```
 
-When `RenderContext` encounters a new template for the first time, it calls `template.pipeline_key()`, checks the cache, and compiles if missing.
+When `RenderTarget` encounters a new template for the first time, it calls `get_or_compile_pipeline()`, checks the cache, and compiles if missing.
 
 ### 8.4 Uniform Layout
 
-The template defines a list of uniform bindings:
+The template defines a list of uniform bindings (in `uniform.rs`):
 
 ```rust
 pub struct UniformBinding {
@@ -659,33 +691,37 @@ pub enum UniformValue {
 }
 ```
 
-When a `Material` sets a uniform:
+Materials are constructed via builders on `MaterialMetadata`:
 
 ```rust
-impl Material {
-    pub fn set_uniform(&mut self, name: impl Into<String>, value: UniformValue) {
-        self.uniforms.insert(name.into(), value);
-        self.dirty = true;
-    }
-
-    pub fn set_texture(&mut self, binding: u32, texture: Handle<Texture>) {
-        self.textures.insert(binding, texture);
-        self.dirty = true;
-    }
+impl MaterialMetadata {
+    pub fn with_uniform(self, name: impl Into<String>, value: UniformValue) -> Self;
+    pub fn with_texture(self, binding: u32, texture: Handle<Texture>) -> Self;
 }
 ```
 
-### 8.5 Caching Summary
+### 8.5 Load-Time Validation
+
+`MaterialLoader` validates the material against its template at load time:
+- Every uniform declared in the template must be provided with a value of the correct type.
+- No extra uniforms beyond what the template declares.
+- Every texture binding declared in the template must be provided.
+- No extra texture bindings beyond what the template declares.
+
+Validation failures produce `AssetError::DependencyValidationFailure { asset_name, dependency_name, reason }`. This ensures that by the time a `Material` exists in the asset store, it is guaranteed to match its template — draw-time never handles mismatches.
+
+### 8.6 Caching Summary
 
 | Cache | Key | Lives on | When compiled/rebuilt |
 |-------|-----|----------|------------------------|
-| Pipeline cache | `(template pipeline_key, target format)` | `RenderContext` (via `PipelineCache`) | First draw with a new template + target format |
-| Bind group cache | — (per-material) | `Material` | When `dirty` (textures/uniforms changed) |
-| Uniform buffer | — (per-material) | `Material` | When `dirty` (params changed) |
+| Pipeline cache | `(Handle<MaterialTemplate>, TextureFormat)` | `RenderContext` (via `PipelineCache`) | First draw with a new template + target format |
+| Bind group cache | `Handle<Material>` | `RenderContext` (via `BindGroupAllocator`) | First draw with a new material (immutable → never rebuilt) |
+| Material uniform buffer | — (shared) | `RenderContext` (via `MaterialUniformPool`) | Batch-built when material set changes |
+| Scene uniform buffer | — (per render target) | `RenderTarget` (via `UniformArena`) | Every render target (scene globals change each frame) |
 
-**Co-located vs centralized caching:** The pipeline cache is centralized in `RenderContext` (because pipelines are shared across materials by template). The bind group cache and uniform buffer are co-located on each `Material` (because they're per-instance). This avoids a separate cache layer to synchronize.
+**Centralized caching:** All GPU-derived caches live in `RenderContext` (pipeline cache, bind group allocator, material uniform pool) — not co-located on `Material`. This keeps `Material` pure data (serializable) and GPU state in the renderer layer. Immutable materials mean the bind group cache is a perfect cache: build once, look up forever, never invalidate.
 
-### 8.6 Material as Asset vs Runtime Object
+### 8.7 Material as Asset vs Runtime Object
 
 `MaterialTemplate` is clearly an asset (loaded from file, shared, hot-reloadable). `Material` (the instance) supports **both**:
 - **As an asset:** Materials defined in data files (`.mat.toml`), loaded by a `MaterialLoader`, stored in `AssetStorage`. Good for data-driven workflows.
@@ -693,7 +729,7 @@ impl Material {
 
 The `Handle<MaterialTemplate>` inside `Material` bridges the two worlds.
 
-### 8.7 Default Material
+### 8.8 Default Material
 
 For the common case (textured sprite, no special state), a default `MaterialTemplate` is provided:
 - Vertex shader: standard 2D position + UV transform
@@ -764,7 +800,7 @@ Both batching and instancing are supported, and the choice is per-scenario:
    - Look up pipeline from cache (keyed by template).
    - Create bind group from material uniforms + textures.
    - Upload uniform data via uniform arena.
-   - Submit draw call via `Frame::submit_draw_batch(DrawBatch)`.
+   - Submit draw call via `RenderTarget::submit_draw_batch(DrawBatch)`.
 
 ### 9.4 Frame Lifecycle
 
@@ -779,7 +815,7 @@ Frame start
   → Drop Render2D/Render3D
     → Batcher2D/Batcher3D: sort collected commands
     → Batcher2D/Batcher3D: flush — for each batch:
-      → Frame::submit_draw_batch(DrawBatch)                 [nova-core]
+      → RenderTarget::submit_draw_batch(DrawBatch)           [nova-core]
         → pipeline cache lookup (from RenderContext)
         → bind group creation (from RenderContext)
         → upload uniforms via frame's uniform arena
@@ -808,27 +844,27 @@ A 2D scene and a 3D scene can render into the same `Frame` as two passes (3D wor
 
 ## 10. High-Level Renderer
 
-### 10.1 Frame-Scoped Borrowers
+### 10.1 Render-Target-Scoped Borrowers
 
-`Render2D` (in `nova-2d`) and `Render3D` (in `nova-3d`) are frame-scoped borrowers of `Frame` — not `RenderContext`. The flow is: `RenderContext` creates a `Frame` via `begin_frame()`, then dimension crates borrow the `Frame` to collect commands and submit batches.
+`Render2D` (in `nova-2d`) and `Render3D` (in `nova-3d`) are render-target-scoped borrowers of `RenderTarget` — not `RenderContext`. The flow is: `RenderContext` creates a `Frame` via `begin_frame()`, the caller creates a `RenderTarget` from `&mut RenderContext` + `frame.view()`, then dimension crates borrow the `RenderTarget` to collect commands and submit batches.
 
 ```rust
 // In nova-2d
 pub struct Render2D<'a> {
-    frame: &'a mut Frame<'a>,
+    target: &'a mut RenderTarget<'a>,
     batcher: Batcher2D,
 }
 
 impl<'a> Render2D<'a> {
-    pub fn new(frame: &'a mut Frame<'a>) -> Self {
-        Render2D { frame, batcher: Batcher2D::new() }
+    pub fn new(target: &'a mut RenderTarget<'a>) -> Self {
+        Render2D { target, batcher: Batcher2D::new() }
     }
 }
 ```
 
-- `Render2D::new(&mut frame)` borrows the `Frame` for the duration of rendering.
-- When `Render2D` is dropped, the batcher flushes — sorts commands and calls `frame.submit_draw_batch()` for each batch.
-- The `Frame` itself is dropped separately (after all dimension-specific borrowers are done), which triggers the GPU submission and present via `Drop`.
+- `Render2D::new(&mut target)` borrows the `RenderTarget` for the duration of rendering.
+- When `Render2D` is dropped, the batcher flushes — sorts commands and calls `target.submit_draw_batch()` for each batch.
+- The `RenderTarget` is submitted separately (after all dimension-specific borrowers are done), which triggers the GPU submission. Then `Frame::present()` presents the surface.
 - This prevents aliasing — you can't have `Render2D` and `Render3D` borrowing the same `Frame` simultaneously.
 
 No trait extensions, no orphan rule issues. Clean constructor pattern.
@@ -866,7 +902,7 @@ pub trait ApplicationProxy {
 
 - `on_update` called in the fixed-timestep loop (already implemented).
 - `on_render` called once per `RedrawRequested`, after the fixed-timestep `on_update` loop.
-- The hardcoded `render()` free function in `handler.rs` is replaced by `begin_frame` → `on_render` → `submit` (via `Frame::drop`).
+- The hardcoded `render()` free function in `handler.rs` is replaced by `begin_frame` → `RenderTarget::new` → `on_render` → `submit` → `Frame::present`.
 
 ### 11.2 AppContext
 
@@ -895,8 +931,11 @@ WindowEvent::RedrawRequested => {
 
     // Render phase (new)
     let mut frame = ctx.render.begin_frame();
-    proxy.on_render(ctx, &mut frame);
-    // frame dropped here → GPU submit + present
+    let mut target = RenderTarget::new(&mut ctx.render, frame.view());
+    proxy.on_render(ctx, &mut target);
+    target.submit();
+    frame.present(ctx.render.queue());
+    // frame + target dropped here
 }
 ```
 
@@ -951,21 +990,21 @@ This way, `use nova_2d::*` gives you everything you need for a 2D application.
 ### Phase 1: nova-core foundation
 
 1. **`RenderContext`** — wrap `GraphicsContext` behind `Mutex`, add `device()`/`queue()`/`surface_format()` accessors, surface loss recovery, configurable present mode.
-2. **`Frame` + `RenderPass`** — per-frame state, `begin_pass()`, `submit()` (or `Drop`), uniform arena.
+2. **`Frame` + `RenderTarget` + `RenderPass`** — surface lifecycle, view-agnostic rendering scope, render pass recording, uniform arena.
 3. **Asset system core** — `AssetStorage<T>`, `Handle<T>`, `Asset`/`AssetLoader`/`ErasedLoader` traits, `LoadContext` (already partially implemented — refactor to use `Arc<RenderContext>`).
 4. **`Shader` + `Texture` assets** — basic loaders (WGSL text loader, PNG texture loader with GPU upload).
-5. **`MaterialTemplate`** — struct, uniform layout, loader (with nested shader dependency), `pipeline_key()`.
+5. **`MaterialTemplate`** — struct, uniform layout, loader (with nested shader dependency), `PipelineCacheKey`.
 6. **`Material`** — struct, `set_uniform`/`set_texture`, `Handle<MaterialTemplate>` reference, dirty-flag bind group/uniform buffer caching.
 7. **`DrawBatch`** — the contract struct.
 8. **`PipelineCache` + `BindGroupAllocator`** — in `RenderContext`.
 9. **Default material** — white 1×1 texture + default template. The fallback for commands without explicit materials.
-10. **Replace `render()` free function** — `begin_frame` → `on_render` → `Frame::drop`. Add `on_render` to `ApplicationProxy`.
+10. **Replace `render()` free function** — `begin_frame` → `RenderTarget::new` → `on_render` → `submit` → `Frame::present`. Add `on_render` to `ApplicationProxy`.
 
 ### Phase 2: nova-2d
 
 11. **`QuadCmd` + `BatchKey2D`** — 2D command struct and sort key.
 12. **`Batcher2D`** — collect, sort by `(layer, template, texture, z)`, produce `DrawBatch`es.
-13. **`Render2D`** — frame-scoped borrower of `Frame`, command collection, delegates to `Batcher2D` + `Frame::submit_draw_batch()`.
+13. **`Render2D`** — render-target-scoped borrower of `RenderTarget`, command collection, delegates to `Batcher2D` + `RenderTarget::submit_draw_batch()`.
 14. **`SpriteBatch`** — dynamic vertex buffer builder for quads.
 15. **`Camera2D`** — orthographic projection → uniform bytes.
 16. **2D default material/template** — embedded WGSL shaders for standard 2D sprite rendering.
@@ -975,7 +1014,7 @@ This way, `use nova_2d::*` gives you everything you need for a 2D application.
 
 18. **`MeshCmd` + `BatchKey3D`** — 3D command struct and sort key (with depth sorting for transparency).
 19. **`Batcher3D`** — collect, sort, produce `DrawBatch`es. Instancing for repeated meshes.
-20. **`Render3D`** — frame-scoped borrower of `Frame`, command collection.
+20. **`Render3D`** — render-target-scoped borrower of `RenderTarget`, command collection.
 21. **`Camera3D`** — perspective projection → uniform bytes.
 22. **`LightSystem`** — directional, point, spot light structs.
 23. **`SceneUniforms`** — camera + lighting data, uploaded once per frame.
@@ -1052,17 +1091,20 @@ audio = []           # future
 | **Loader** | A trait-implementing struct that turns file bytes into a GPU asset. |
 | **GraphicsContext** | Internal, raw wgpu resources (Surface, Device, Queue, Config). `pub(crate)`. |
 | **RenderContext** | Public hub wrapping `GraphicsContext` via `Arc<Mutex<...>>`. Owns pipeline cache + bind group allocator. |
-| **Frame** | Per-frame object: surface texture view + command encoder + uniform arena. RAII — `Drop` submits + presents. |
-| **RenderPass** | Scoped recording context that borrows a `Frame` mutably. |
+| **Frame** | Surface lifecycle: owns the surface texture + view. Lightweight. `present()` presents to screen. |
+| **RenderTarget** | View-agnostic rendering scope: command encoder + uniform arena. Borrows `&mut RenderContext`. `submit()` finishes encoder + submits to queue. |
+| **RenderPass** | Scoped recording context that borrows a `RenderTarget` mutably. |
 | **MaterialTemplate** | Asset defining the rendering recipe (shaders, layouts, blend state, uniform definitions). Shared. Drives pipeline compilation. |
 | **Material** | Instance of a template. Holds unique uniform values and texture bindings. Lightweight. |
-| **UniformArena** | Per-frame transient buffer for camera/scene uniforms. |
-| **PipelineCache** | `HashMap<(PipelineKey, format), RenderPipeline>` — avoids recompilation. Lives in `RenderContext`. |
-| **PipelineKey** | Cache key for `wgpu::RenderPipeline`, derived from `MaterialTemplate` properties. |
-| **DrawBatch** | Contract struct passed to `Frame::submit_draw_batch()`. Contains pipeline key + bind groups + vertex data + instance count. |
+| **UniformArena** | Per-render-target transient buffer for scene-global uniforms (camera, time). Group 0. |
+| **MaterialUniformPool** | Shared persistent buffer for all material uniforms. Batch-built. Group 1. |
+| **PipelineCache** | `HashMap<(PipelineCacheKey, format), RenderPipeline>` — avoids recompilation. Lives in `RenderContext`. |
+| **PipelineCacheKey** | Cache key for `wgpu::RenderPipeline`: `(Handle<MaterialTemplate>, TextureFormat)`. |
+| **BindGroupAllocator** | Per-material `wgpu::BindGroup` cache keyed by `Handle<Material>`. Immutable materials = perfect cache. Lives in `RenderContext`. |
+| **DrawBatch** | Contract struct passed to `RenderTarget::submit_draw_batch()`. Contains pipeline key + material handle + vertex data. |
 | **BatchKey2D** | Sort key for batching 2D commands: `{ template, texture }`. |
 | **BatchKey3D** | Sort key for batching 3D commands: `{ template, mesh, material }`. |
 | **Batcher2D / Batcher3D** | Collects, sorts, and flushes dimension-specific commands. Produces `DrawBatch`es. |
-| **Render2D / Render3D** | Frame-scoped borrower of `Frame`. Provides the dimension-specific command API. |
+| **Render2D / Render3D** | Render-target-scoped borrower of `RenderTarget`. Provides the dimension-specific command API. |
 | **AppContext** | The only interface exposed to application code. Contains `RenderContext` + `AssetManager` + `WindowApi`, no raw wgpu. |
 | **ApplicationProxy** | User-implemented trait. The entry point for application logic (`on_update`, `on_render`). |

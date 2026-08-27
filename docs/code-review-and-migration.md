@@ -179,8 +179,8 @@ Instead of `load::<A>(path)`, the API is `load::<A>(metadata: A::Metadata)`. Eac
 - **`UniformBinding`** — `{ name, ty: UniformType, binding_slot, visibility: ShaderStage }`. Drives bind group layout creation (Step 8).
 - **`UniformType`** — `Mat4`, `Vec4`, `F32` with `size()`.
 - **`UniformValue`** — `Mat4(Mat4)`, `Vec4(Vec4)`, `F32(f32)` with `write_bytes(bytes, offset)` using `bytemuck` + `glam`'s column-major (std140) layout.
-- **`Material`** — per-instance: `{ template: Handle<MaterialTemplate>, uniforms: HashMap<String, UniformValue>, textures: HashMap<u32, Handle<Texture>>, dirty: bool }`. Methods: `new`, `set_uniform`, `set_texture`, `is_dirty`/`clear_dirty`. The `dirty` flag drives Step 8's `Material::ensure_bound`.
-- **`PipelineKey`** — opaque type (`_private: ()`); placeholder. Step 8 will store `Handle<MaterialTemplate>` inside and use `(PipelineKey, TextureFormat)` as the `PipelineCache` key.
+- **`Material`** — per-instance: `{ template: Handle<MaterialTemplate>, uniforms: HashMap<String, UniformValue>, textures: HashMap<u32, Handle<Texture>> }`. Immutable (no `dirty` flag, no mutators). Builders on `MaterialMetadata`: `with_uniform`, `with_texture`. Load-time validation in `MaterialLoader` (Step 8).
+- **`PipelineKey`** — backed by `PipelineCacheKey { material_template_handle, target_format }` (Step 8).
 - **`MaterialTemplateLoader`** — trivial: metadata carries resolved `Handle<Shader>`s, loader wraps in `MaterialTemplate::new`. No nested loading at loader level.
 - **`MaterialTemplateLoader` registered** in `app.rs` `init_assets_manager` alongside `ShaderLoader`, `SamplerLoader`, `TextureLoader`.
 
@@ -192,6 +192,76 @@ Instead of `load::<A>(path)`, the API is `load::<A>(metadata: A::Metadata)`. Eac
 
 **Files added:** `graphics/material.rs` (already existed as skeleton, fully written)
 **Files modified:** `assets.rs`, `assets/load.rs`, `graphics/shader.rs`, `graphics.rs`, `app.rs`
+
+---
+
+#### ✅ Step 8 — `PipelineCache` + `BindGroupAllocator` + `RenderTarget` refactor
+
+**Goal:** Pipeline compilation is deduplicated; bind groups are allocated efficiently. The rendering pipeline is restructured around `RenderTarget`.
+
+**Why now:** Without pipeline caching, every material recompiles its pipeline on first use. With many materials, this stalls. The cache keys off the template, so materials sharing a template share a pipeline.
+
+**What was done:**
+
+**Uniform system redesign** (`graphics/uniform.rs`):
+- **`UniformArena`** — per-frame transient storage for scene-global data (camera, time, lighting). Typed staging entries (`upload(binding_slot, value)`), builds group 0 bind group once per frame via `build_bind_group(device, layout)`, `reset()` at frame start. Scene globals are NOT stored in `Material`.
+- **`MaterialUniformPool`** — persistent, batch-built shared `wgpu::Buffer` for all material uniforms. `build(device, materials)` packs all materials' uniform values (in `template.uniform_layout()` order), records per-`Handle<Material>` `(offset, size)` allocations. Caller controls when to (re)build.
+- **Uniform types moved to `uniform.rs`** — `UniformType` (Mat4/Vec4/F32 + `size()`), `UniformValue` (typed enum + `write_bytes`), `UniformBinding` (declaration in template metadata). `material.rs` imports them.
+- **Removed** the old arena that held all uniforms and returned opaque `UniformId`s (which broke serialization). Removed `UniformId`, `UniformIdGenerator`, `UniformArenaRef`, `UniformBuffer`, `Uniform`, `UniformsBuffer`.
+
+**Immutable materials** (`graphics/material.rs`):
+- **`MaterialMetadata.uniforms`** changed from `Vec<UniformId>` to `HashMap<String, UniformValue>` (typed, serializable source of truth). Builders: `with_uniform(name, value)`, `with_texture(binding, handle)`.
+- **No `dirty` flag, no mutators.** Materials are immutable once loaded. To change a material, load a new one. This removes the `ensure_bound` invalidation path from the original spec.
+- **`MaterialLoader` with validation** — resolves the `MaterialTemplate` via `ctx.assets.get_asset`, validates every uniform (provided + correct type + no extras) and every texture binding (provided + no extras) against the template layout. Failures produce `AssetError::DependencyValidationFailure { asset_name, dependency_name, reason }`.
+- **`AssetError::DependencyValidationFailure`** added (`assets/error.rs`) with `Display` impl.
+
+**Bind group allocator** (`graphics/bind.rs`):
+- **`BindGroupAllocator`** — owns `MaterialUniformPool` + `HashMap<Handle<Material>, wgpu::BindGroup>` cache. Materials are immutable → bind groups built once, cached forever (perfect cache).
+- `build_uniform_pool(device, materials)` — caller calls when material set changes; clears bind group cache.
+- `get_or_create(device, ResolvedMaterial, layout)` — per-material bind group, builds from pool buffer (at material's offset) + resolved texture views/samplers.
+- Per-uniform buffer entries: each template uniform binding slot gets its own `BindGroupEntry`, computed sequentially from the material's allocation offset.
+
+**Pipeline cache** (`graphics/pipeline.rs`):
+- `PipelineCacheKey { material_template_handle, target_format }`. `get_or_compile` compiles on first encounter, cache hits after.
+- `Pipeline` holds `wgpu::RenderPipeline` + the material bind group layout (group 1).
+- Group 0 layout = `scene_bind_group_layout` (singleton on `RenderContext`). Group 1 layout = derived from template's `uniform_layout()` + `texture_layout()`.
+- `textrue_layout()` → `texture_layout()` typo fix in `MaterialTemplate`.
+
+**`RenderTarget` refactor** (`graphics/render_target.rs`, new):
+- **`RenderTarget<'a>`** — view-agnostic, borrows `&mut RenderContext` for direct mutable access to `pipeline_cache` and `bind_group_allocator` (no `RefCell`). Owns command encoder + `UniformArena`.
+- Methods: `upload_uniform`, `build_scene_bind_group`, `get_or_compile_pipeline`, `build_uniform_pool`, `get_or_create_bind_group`, `begin_render_pass`, `submit`.
+- `submit()` finishes encoder + submits to queue (no present — `Frame`'s job).
+- `get_or_create_bind_group` takes `ResolvedMaterial` (simplified API).
+
+**`Frame` slimmed** (`graphics/frame.rs`):
+- Now just `SurfaceTexture` + `TextureView` + `present(queue)`. No encoder, no arena, no `RenderContext` borrow, no lifetime parameter.
+
+**`RenderContext`** (`graphics/render.rs`):
+- Owns `pipeline_cache` + `bind_group_allocator` as `pub(crate)` fields. `scene_bind_group_layout` (binding 0 = camera Mat4 VERTEX, binding 1 = time F32 VERTEX_FRAGMENT). `surface_format()` accessor.
+- `begin_frame()` returns `Frame` (no lifetime tied to `RenderContext`).
+
+**`RenderPass`** (`graphics/render_pass.rs`):
+- `begin_render_pass` logic moved into `RenderTarget` (handles split-borrow of `self.view` + `self.encoder`). `RenderPass.inner` is `pub(crate)`. Borrows `RenderTarget` mutably.
+
+**`on_render` flow** (`app/handler.rs`):
+```
+frame = begin_frame()           → Frame (no borrow)
+target = RenderTarget::new(&mut render_ctx, frame.view())
+proxy.on_render(ctx, &mut target)
+target.submit()                 → encoder.finish + queue.submit
+frame.present(&queue)           → surface present
+```
+
+**`ApplicationProxy::on_render`** signature: `fn on_render(&mut self, ctx: &ApplicationContext, target: &mut RenderTarget<'_>)`.
+
+**Divergence from original spec:**
+- `Material::ensure_bound` (dirty-flag-based) replaced by immutable materials + batch uniform pool build + permanent bind group cache. No `dirty` flag needed.
+- `RenderPass::draw_material` convenience method deferred to Step 9 (thin wrapper, needs a real material to test).
+
+**Deliverable:** Pipeline compilation deduplicated by template, per-material bind groups cached, scene globals in a separate arena, materials immutable + validated at load, `RenderTarget` enables view-agnostic rendering with direct cache access.
+
+**Files added:** `graphics/render_target.rs`, `graphics/uniform.rs` (rewritten)
+**Files modified:** `graphics/material.rs`, `graphics/bind.rs` (rewritten), `graphics/render.rs`, `graphics/frame.rs`, `graphics/render_pass.rs`, `graphics/pipeline.rs`, `graphics.rs`, `assets/error.rs`, `app.rs`, `app/handler.rs`, `nova-test/src/main.rs`
 
 ---
 
@@ -207,6 +277,7 @@ Instead of `load::<A>(path)`, the API is `load::<A>(metadata: A::Metadata)`. Eac
 | Step 5 — `Handle<T>` generational refactor | ✅ Done | Compact 8-byte generational handle, free-list slot reuse |
 | Step 6 — Metadata-driven asset system | ✅ Done | `Shader` + `Sampler` + `Texture` assets + loaders, metadata-driven load API |
 | Step 7 — `MaterialTemplate` + `Material` | ✅ Done | Material recipe/instance model, engine-native enums, `LoadContext` borrow refinement, shader entry points |
+| Step 8 — `PipelineCache` + `BindGroupAllocator` + `RenderTarget` | ✅ Done | Pipeline caching by template, per-material bind group cache, `UniformArena` (group 0), `MaterialUniformPool`, `RenderTarget` refactor, immutable materials with load-time validation |
 
 **Critical issues resolved:** C1 (no `on_render`), C2 (no `RenderContext`), C3 (no `Frame`/`RenderPass`), C4 (surface loss), C5 (present mode), H1 (no loaders), H2 (loaders use `GraphicsContext`), H3 (`ApplicationContext` leaks GPU), H4 (handler reaches into `GraphicsContext`), H5 (loader registration hook), L1 (`Handle` non-generational), L2 (`AssetStorage` panics), L3 (`AssetError` no context), L6 (missing deps).
 
@@ -215,25 +286,6 @@ Instead of `load::<A>(path)`, the API is `load::<A>(metadata: A::Metadata)`. Eac
 ## Part B — Remaining Migration Walkthrough
 
 Each step is self-contained and leaves the codebase in a working state.
-
-### Step 8 — `PipelineCache` + `BindGroupAllocator` in `RenderContext`
-
-**Goal:** Pipeline compilation is deduplicated; bind groups are allocated efficiently.
-
-**Why now:** Without pipeline caching, every material recompiles its pipeline on first use. With many materials, this stalls. The cache keys off the template, so materials sharing a template share a pipeline.
-
-**Tasks:**
-1. Implement `PipelineCache`: `HashMap<(PipelineKey, TextureFormat), wgpu::RenderPipeline>`. `PipelineKey` is produced by `MaterialTemplate::pipeline_key()` (Step 7; currently opaque — back it with `Handle<MaterialTemplate>`). `get_or_compile(key, format, device)` resolves the template handle to fetch shaders (via `AssetsManager::get_asset`), reads `entry_point()`/`vertex_buffer_layout()`/`blend_state()`/`depth_stencil()`/`topology()`, and compiles the pipeline.
-2. Implement `BindGroupAllocator`: creates `wgpu::BindGroup` from material data + the template's `uniform_layout()` (engine-native enums → `wgpu` via `Into` impls). Pool descriptor sets to avoid churn.
-3. Add both to `RenderContext`.
-4. Implement `Material::ensure_bound(device, queue)` — pack uniforms via `UniformValue::write_bytes`, update uniform buffer + rebuild bind groups if `is_dirty()`, then `clear_dirty()`.
-5. Implement `RenderPass::draw_material(&material, ...)` — convenience: bind pipeline + bind groups + draw.
-
-**Deliverable:** Materials compile pipelines (cached by template) and bind groups on first use; subsequent uses are cache hits.
-
-**Dependencies:** Step 7 (`MaterialTemplate` + `Material` + `PipelineKey` + engine-native enums + `UniformValue::write_bytes`).
-
----
 
 ### Step 9 — Default resources + first render test (colored quad)
 
@@ -245,12 +297,12 @@ Each step is self-contained and leaves the codebase in a working state.
 1. Write `nova-core/src/graphics/defaults/shader_2d_flat.wgsl` (vertex: position + color + ortho projection uniform; fragment: output color). Embedded via `include_str!`.
 2. Register default shaders via `ShaderMetadata::from_inline(...)` + `AssetsManager::load::<Shader>` (the `ShaderSource::Inline` variant already supports this).
 3. Create a default `MaterialTemplate` (2D flat) + default white 1×1 `Texture` via `TextureMetadata::from_raw(...)` (the `TextureSource::Raw` variant already supports this).
-4. Add `UniformArena` to `Frame` (minimal: per-frame staging buffer for the camera projection uniform).
-5. In `nova-test`, create a `Material` from the default template, set `u_color`, define quad vertices, and render in `on_render` using `RenderPass::draw_material` (or direct `set_pipeline` + `set_bind_group` + `draw`).
+4. Use `RenderTarget`'s `upload_uniform` for the camera projection uniform (the `UniformArena` is already on `RenderTarget`).
+5. In `nova-test`, create a `Material` from the default template, set `u_color`, define quad vertices, and render in `on_render` using `RenderTarget::begin_render_pass` + `set_pipeline` + `set_bind_group` + `draw` (or a `draw_material` convenience method added here).
 
 **Deliverable:** A colored quad on screen, rendered entirely through the public API. Proves the architecture end-to-end.
 
-**Dependencies:** Steps 6–8. Brings back the deferred `UniformArena` from Step 2.
+**Dependencies:** Steps 6–8. `UniformArena` already on `RenderTarget` from
 
 ---
 
@@ -260,10 +312,10 @@ Each step is self-contained and leaves the codebase in a working state.
 
 **Tasks:**
 1. Define `DrawBatch` in `nova-core`: `{ template_key, material, bind_groups, vertex_buffer, vertex_count, instance_count, uniform_data, render_pass_descriptor }`.
-2. Implement `Frame::submit_draw_batch(batch)` — pipeline lookup, bind group creation, uniform upload, command recording.
+2. Implement `RenderTarget::submit_draw_batch(batch)` — pipeline lookup, bind group creation, uniform upload, command recording.
 3. This is the seam where `nova-2d`/`nova-3d` batchers will plug in.
 
-**Deliverable:** `Frame::submit_draw_batch()` works. The contract for dimension-specific batchers is ready.
+**Deliverable:** `RenderTarget::submit_draw_batch()` works. The contract for dimension-specific batchers is ready.
 
 **Dependencies:** Steps 7–8 (materials + pipeline cache).
 
@@ -282,7 +334,7 @@ Each step is self-contained and leaves the codebase in a working state.
 4. Implement `Batcher2D`: collect, sort by `(layer, BatchKey2D, z)`, flush → `Frame::submit_draw_batch(DrawBatch)`.
 5. Implement `Render2D<'a>`: frame-scoped borrower, `draw_quad(cmd)`, `draw_sprite(texture, transform)`. On `Drop`, flush batcher.
 6. Implement `SpriteBatch`: dynamic vertex buffer builder for quads.
-7. Implement `Camera2D`: orthographic projection → `frame.upload_uniform(bytes)`.
+7. Implement `Camera2D`: orthographic projection → `target.upload_uniform(binding, value)`.
 8. Write `shader_2d_textured.wgsl`, create default 2D textured material template.
 9. Re-export core types from `nova-2d/src/lib.rs`.
 10. In `nova-test`, load a texture, create sprites, render with `Render2D` + `Camera2D`.
@@ -315,7 +367,7 @@ Each step is self-contained and leaves the codebase in a working state.
 
 **Deliverable:** 3D meshes on screen with camera and lighting. The `nova-3d` crate is complete. Brings back the deferred depth pool from Step 2.
 
-**Dependencies:** Step 10 (`DrawBatch`). Step 9 (`UniformArena`). `glam` for math.
+**Dependencies:** Step 10 (`DrawBatch`). Step 8 (`UniformArena` on `RenderTarget`). `glam` for math.
 
 ---
 
@@ -327,7 +379,7 @@ Each step is self-contained and leaves the codebase in a working state.
 - **ECS integration:** optional backend (feature flag).
 - **Culling:** frustum culling in `nova-3d`.
 - **Asset deduplication:** `Metadata: Hash + Eq`-based `HashMap<A::Metadata, Handle<A>>`, when memory waste is measured. (Metadata-driven design from Step 6 makes this a natural extension.)
-- **`frame_index: u64`** on `Frame` — for double-buffering schemes (cheap to add anytime).
+- **`frame_index: u64`** on `RenderTarget` — for double-buffering schemes (cheap to add anytime).
 
 ---
 
@@ -346,6 +398,9 @@ Each step is self-contained and leaves the codebase in a working state.
 | H3 — `ApplicationContext` leaks GPU | 🟡 High | ✅ Resolved | Step 3 | Holds `Rc<RefCell<RenderContext>>` |
 | H4 — `handler.rs` reaches into `GraphicsContext` | 🟡 High | ✅ Resolved | Step 3 | `render()` deleted; goes through `Frame` |
 | H5 — No loader registration hook for 2d/3d | 🟡 High | ✅ Resolved | Step 6 | Loaders registered in `app.rs` `init_assets_manager` |
+| L7 — `RenderPass::new` is dead code | 🟢 Low | ⏳ Anytime | — | `RenderPass::new` duplicates `RenderTarget::begin_render_pass` (user refactored). Remove `RenderPass::new` and the unused `RenderTarget` import in `render_pass.rs`. |
+| L8 — `ResolvedTextureBinding` unused | 🟢 Low | ⏳ Anytime | — | `bind.rs` defines `ResolvedTextureBinding` but `get_or_create` uses `ResolvedMaterial` directly. Remove the dead struct. |
+| L9 — `nova-test` unused imports | 🟢 Low | ⏳ Anytime | — | `Sampler`, `Shader`, `Texture` + their `*Metadata` types imported but unused in `nova-test/src/main.rs`. Clean up when Step 9 adds real usage. |
 | L1 — `Handle` non-generational design | 🟢 Low | ✅ Resolved | Step 5 | Refactored to `(index: u32, generation: u32)` |
 | L2 — `AssetStorage` panics on bad index | 🟢 Low | ✅ Resolved | Step 0 | `get_mut`/`remove` use `?` |
 | L3 — `AssetError` no context | 🟢 Low | ✅ Resolved | Step 6 | Payloads + `Display` + `std::error::Error` |
@@ -366,7 +421,7 @@ Each step is self-contained and leaves the codebase in a working state.
 ✅ Step 6  — Metadata-driven asset system (Shader + Sampler + Texture)  ← asset system functional
 ✅ Step 7  — MaterialTemplate + Material + asset system refinements
 
-⬜ Step 8  — PipelineCache + BindGroupAllocator
+✅ Step 8  — PipelineCache + BindGroupAllocator + RenderTarget refactor
 ⬜ Step 9  — Default resources + colored quad                 ← END-TO-END MILESTONE
 ⬜ Step 10 — DrawBatch + submit_draw_batch (batcher contract)
 ⬜ Step 11 — nova-2d crate (sprite batching, Camera2D)
@@ -374,4 +429,4 @@ Each step is self-contained and leaves the codebase in a working state.
 ⬜ Step 13+— Polish (hot-reload, umbrella crate, async, ECS, culling, serialization, dedup)
 ```
 
-**Next up:** Step 8 (`PipelineCache` + `BindGroupAllocator`) — pipeline compilation deduplicated by `MaterialTemplate`, bind groups built from `UniformValue` data. Builds on Step 7's `PipelineKey`, `MaterialTemplate` accessors, and engine-native enums.
+**Next up:** Step 9 (Default resources + colored quad) — the end-to-end milestone. Proves assets → materials → pipelines → `RenderTarget` → render pass → draw → submit → present.
