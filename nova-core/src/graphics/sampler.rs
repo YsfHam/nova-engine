@@ -163,7 +163,7 @@ impl AssetLoader for SamplerLoader {
         metadata: SamplerMetadata,
         ctx: &crate::assets::load::LoadContext,
     ) -> Result<Sampler, AssetError> {
-        let render_ctx = ctx.render_ctx.borrow();
+        let render_ctx = ctx.render_ctx.get();
         let sampler = render_ctx.device().create_sampler(&wgpu::SamplerDescriptor {
             label: Some(&metadata.label),
             address_mode_u: metadata.address_mode_u.into(),

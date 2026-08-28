@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use image::ImageReader;
 
 use crate::{
-    assets::{Asset, error::AssetError, handle::Handle, load::AssetLoader},
-    graphics::{render::RenderContext, sampler::Sampler},
+    assets::{Asset, error::AssetError, handle::Handle, load::AssetLoader}, graphics::{render::RenderContext, sampler::Sampler},
 };
 
 /// A GPU texture. References a shared [`Sampler`] via a [`Handle`].
@@ -231,7 +230,7 @@ impl AssetLoader for TextureLoader {
             }
         };
 
-        let texture = Self::build_texture(&ctx.render_ctx.borrow(), &data, size, &metadata);
+        let texture = Self::build_texture(&ctx.render_ctx.get(), &data, size, &metadata);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         Ok(Texture {

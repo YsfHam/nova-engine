@@ -1,25 +1,30 @@
+use std::cell::RefMut;
+
 use crate::{
     assets::resolve::ResolvedMaterialTemplate, graphics::{
-        environment::EnvironmentDescriptor, pipeline::{Pipeline, PipelineDescriptor}, render::RenderContext, render_pass::{RenderPass, RenderPassDescriptor}, uniform::{MaterialUniformEntry, UniformArena, UniformValue},
+        bind::BindGroupAllocator, environment::EnvironmentDescriptor, pipeline::{Pipeline, PipelineCache, PipelineDescriptor}, render::RenderContext, render_pass::{RenderPass, RenderPassDescriptor}, texture::TextureFormat, uniform::{MaterialUniformEntry, UniformArena},
     },
 };
 
 /// A view-agnostic render target. Owns a command encoder and a per-target
-/// [`UniformArena`], and borrows `&mut [`RenderContext`]` for direct access to
-/// the pipeline cache and bind group allocator.
+/// [`UniformArena`], and holds a `RefMut<RenderContext>` guard (obtained from
+/// [`RenderContextRef::get_mut`](crate::graphics::render::RenderContextRef::get_mut))
+/// for direct access to the pipeline cache and bind group allocator.
 ///
-/// `RenderTarget` is generic over its target view: it works for on-screen
-/// rendering (the surface view from [`Frame`](crate::graphics::frame::Frame))
-/// and off-screen rendering (any arbitrary `TextureView`). To submit
-/// recorded commands, call [`submit`](Self::submit); the caller is
-/// responsible for presenting the surface (via `Frame::present`).
+/// `RenderTarget` works for on-screen rendering (the surface view from
+/// [`Frame`](crate::graphics::frame::Frame)) and off-screen rendering (any
+/// arbitrary `TextureView`, e.g. a `TextureRenderTarget`).
+/// To submit recorded commands, call [`submit`](Self::submit); the caller is
+/// responsible for presenting the surface (via
+/// [`Frame::present`](crate::graphics::frame::Frame::present)).
 ///
-/// Because `RenderTarget` holds `&mut RenderContext`, methods like
-/// [`get_or_compile_pipeline`] and [`get_or_create_bind_group`] can return
-/// references whose lifetime is tied to the `RenderTarget` borrow — no
-/// `RefCell` or guard types are needed.
+/// Because `RenderTarget` holds the `RefMut` guard, methods on
+/// [`RenderTargetCommander`] can return references whose lifetime is tied to
+/// the `RenderTarget` borrow — no nested `RefCell` borrows are needed.
 pub struct RenderTarget<'a> {
-    render_ctx: &'a mut RenderContext,
+    /// The mutable borrow of `RenderContext`, held for the target's lifetime.
+    /// Gives direct field access (device, pipeline_cache, bind_group_allocator).
+    render_ctx: RefMut<'a, RenderContext>,
     pub(crate) view: &'a wgpu::TextureView,
     pub(crate) encoder: wgpu::CommandEncoder,
     uniform_arena: UniformArena,
@@ -27,10 +32,12 @@ pub struct RenderTarget<'a> {
 }
 
 impl<'a> RenderTarget<'a> {
-    /// Creates a render target rendering into `view`, borrowing
-    /// `render_ctx` mutably for pipeline-cache and bind-group-allocator
-    /// access.
-    pub fn new(render_ctx: &'a mut RenderContext, view: &'a wgpu::TextureView) -> Self {
+    /// Creates a render target rendering into `view`, holding a mutable borrow
+    /// of the `RenderContext` (via the `RefMut` guard from `render_ctx_ref`).
+    ///
+    /// The caller passes a `RefMut<RenderContext>` obtained from
+    /// [`RenderContextRef::get_mut`](crate::graphics::render::RenderContextRef::get_mut).
+    pub fn new(render_ctx: RefMut<'a, RenderContext>, view: &'a wgpu::TextureView) -> Self {
         let encoder = render_ctx.device().create_command_encoder(
             &wgpu::CommandEncoderDescriptor {
                 label: Some("RenderTarget encoder"),
@@ -46,12 +53,20 @@ impl<'a> RenderTarget<'a> {
         }
     }
 
-
+    /// Creates a `RenderTargetCommander` bound to this target, configured with
+    /// the given environment (scene uniforms). The commander borrows the
+    /// target's fields and records all draw commands.
     pub fn commander(&mut self, environment: EnvironmentDescriptor) -> RenderTargetCommander<'_> {
         self.set_environment(environment);
 
+        // Deref the RefMut guard to get &mut RenderContext, then borrow its
+        // disjoint fields individually. The guard stays alive on self.
+        let render_ctx: &mut RenderContext = &mut self.render_ctx;
         RenderTargetCommander {
-            render_ctx: self.render_ctx,
+            device: &render_ctx.gfx.device,
+            surface_format: render_ctx.surface_format(),
+            pipeline_cache: &mut render_ctx.pipeline_cache,
+            bind_group_allocator: &mut render_ctx.bind_group_allocator,
             scene_bind_group_layout: self.scene_bind_group_layout.as_ref().unwrap(),
             uniform_arena: &mut self.uniform_arena,
             encoder: &mut self.encoder,
@@ -73,8 +88,7 @@ impl<'a> RenderTarget<'a> {
                 count: None,
             };
 
-            self.upload_uniform(uniform.binding_slot, uniform.uniform);
-
+            self.uniform_arena.upload(uniform.binding_slot, uniform.uniform);
             entries.push(entry);
         }
 
@@ -93,19 +107,94 @@ impl<'a> RenderTarget<'a> {
         let queue = self.render_ctx.queue();
         queue.submit(std::iter::once(self.encoder.finish()));
     }
-
-    // ─── Uniform arena (group 0: environment) ───────────────────────────
-
-    /// Uploads a scene-global uniform value at `binding_slot` (group 0).
-    fn upload_uniform(&mut self, binding_slot: u32, value: UniformValue) {
-        self.uniform_arena.upload(binding_slot, value);
-    }
-
 }
 
 
+/// An off-screen render target backed by a texture. Owns a `wgpu::Texture`
+/// and its `TextureView`, and produces a [`RenderTarget`] that renders into
+/// that view.
+///
+/// This is the "do whatever you want" off-screen target: the caller creates
+/// it (either via [`RenderContext::create_texture_target`](crate::graphics::render::RenderContext) or
+/// directly), uses the [`RenderTarget`] to record commands, submits, and then
+/// reads the texture (e.g. as a sampling source in a subsequent pass).
+///
+/// The texture is owned by this struct so it lives as long as needed.
+/// [`RenderTarget::submit`] records into the command queue; the texture's
+/// contents are available after GPU completion.
+pub struct TextureRenderTarget {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+impl TextureRenderTarget {
+    /// Creates a new texture render target with the given dimensions and
+    /// format. The texture is created with `RENDER_ATTACHMENT` +
+    /// `TEXTURE_BINDING` usage so it can be both rendered into and sampled.
+    pub fn new(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        label: Option<&str>,
+    ) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label,
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: format.into(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self { texture, view }
+    }
+
+    /// The underlying texture (e.g. to create additional views or sample it).
+    pub fn texture(&self) -> &wgpu::Texture {
+        &self.texture
+    }
+
+    /// The default texture view that the [`RenderTarget`] renders into.
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+
+    /// Creates a [`RenderTarget`] that renders into this texture's view,
+    /// holding the given `RefMut<RenderContext>` guard for its lifetime.
+    pub fn as_render_target<'a>(
+        &'a self,
+        render_ctx: RefMut<'a, RenderContext>,
+    ) -> RenderTarget<'a> {
+        RenderTarget::new(render_ctx, &self.view)
+    }
+}
+
+
+/// A command-recording scope bound to a [`RenderTarget`]. Created via
+/// [`RenderTarget::commander`], it borrows the target's encoder, uniform
+/// arena, and the `RenderContext`'s split-borrowed fields (device,
+/// pipeline_cache, bind_group_allocator) to record draw commands.
+///
+/// The commander is the primary draw API: it compiles pipelines, builds bind
+/// groups, and records passes. Because the fields are split-borrowed from
+/// the `RefMut<RenderContext>` guard at creation time, all field access is
+/// plain `&`/`&mut` — no nested `RefCell` borrows, and disjoint fields
+/// (pipeline_cache vs bind_group_allocator vs encoder) coexist freely.
 pub struct RenderTargetCommander<'a> {
-    render_ctx: &'a mut RenderContext,
+    device: &'a wgpu::Device,
+    surface_format: wgpu::TextureFormat,
+    pipeline_cache: &'a mut PipelineCache,
+    bind_group_allocator: &'a mut BindGroupAllocator,
     scene_bind_group_layout: &'a wgpu::BindGroupLayout,
     uniform_arena: &'a mut UniformArena,
     encoder: &'a mut wgpu::CommandEncoder,
@@ -119,7 +208,7 @@ impl<'a> RenderTargetCommander<'a> {
     pub fn build_scene_bind_group(&mut self) -> Option<wgpu::BindGroup> {
         let scene_bind_group_layout = self.scene_bind_group_layout;
         self.uniform_arena.build_bind_group(
-            self.render_ctx.device(),
+            self.device,
             scene_bind_group_layout
         )
     }
@@ -137,11 +226,9 @@ impl<'a> RenderTargetCommander<'a> {
         let desc = PipelineDescriptor {
             material_template: template,
             scene_bind_group_layout: self.scene_bind_group_layout,
-            target_format: self.render_ctx.surface_format(),
+            target_format: self.surface_format,
         };
-        self.render_ctx
-            .pipeline_cache
-            .get_or_compile(&self.render_ctx.gfx.device, desc)
+        self.pipeline_cache.get_or_compile(self.device, desc)
     }
 
     // ─── Bind group allocator (group 1: material) ───────────────────────
@@ -155,9 +242,7 @@ impl<'a> RenderTargetCommander<'a> {
     where
         I: IntoIterator<Item = MaterialUniformEntry<'b>>,
     {
-        self.render_ctx
-            .bind_group_allocator
-            .build_uniform_pool(&self.render_ctx.gfx.device, materials);
+        self.bind_group_allocator.build_uniform_pool(self.device, materials);
     }
 
     /// Returns the cached bind group for a material, or builds + caches it
@@ -170,8 +255,8 @@ impl<'a> RenderTargetCommander<'a> {
         material: crate::assets::resolve::ResolvedMaterial<'_>,
         material_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> &wgpu::BindGroup {
-        self.render_ctx.bind_group_allocator.get_or_create(
-            &self.render_ctx.gfx.device,
+        self.bind_group_allocator.get_or_create(
+            self.device,
             material,
             material_bind_group_layout,
         )
@@ -179,7 +264,7 @@ impl<'a> RenderTargetCommander<'a> {
 
     /// Whether the material uniform pool has been built.
     pub fn is_uniform_pool_built(&self) -> bool {
-        self.render_ctx.bind_group_allocator.is_uniform_pool_built()
+        self.bind_group_allocator.is_uniform_pool_built()
     }
 
     /// Draws a single material in one call: begins a render pass, compiles
@@ -211,44 +296,30 @@ impl<'a> RenderTargetCommander<'a> {
         vertices: std::ops::Range<u32>,
         instances: std::ops::Range<u32>,
     ) {
-        // Split-borrow `&mut self` into disjoint fields:
-        //   - render_ctx (holds pipeline_cache + bind_group_allocator + device)
-        //   - encoder (the command encoder, borrowed by the render pass)
-        //   - view (the target texture view)
-        // These never alias, so their references coexist in this scope.
-        let device = &self.render_ctx.gfx.device;
-        let scene_layout = &self.scene_bind_group_layout;
-        let surface_format = self.render_ctx.surface_format();
-        let pipeline_cache = &mut self.render_ctx.pipeline_cache;
-        let bind_group_allocator = &mut self.render_ctx.bind_group_allocator;
-        let encoder = &mut self.encoder;
-        let view = self.view;
-
-        // Compile (or fetch cached) the pipeline — borrows pipeline_cache.
-        let pipeline = pipeline_cache.get_or_compile(
-            device,
+        // The commander's fields are already split-borrowed from the
+        // RenderContext guard, so pipeline_cache, bind_group_allocator,
+        // device, and encoder are all disjoint — they coexist freely.
+        let pipeline = self.pipeline_cache.get_or_compile(
+            self.device,
             PipelineDescriptor {
                 material_template: resolved_material.material_template,
-                scene_bind_group_layout: scene_layout,
-                target_format: surface_format,
+                scene_bind_group_layout: self.scene_bind_group_layout,
+                target_format: self.surface_format,
             },
         );
 
-        // Build (or fetch cached) the material bind group — borrows
-        // bind_group_allocator (disjoint from pipeline_cache).
         let material_bind_group_layout = pipeline
             .bind_group_layout
             .as_ref()
             .expect("material declares bindings → group 1 layout exists");
-        let material_bind_group = bind_group_allocator.get_or_create(
-            device,
+        let material_bind_group = self.bind_group_allocator.get_or_create(
+            self.device,
             resolved_material,
             material_bind_group_layout,
         );
 
-        // Begin the render pass — borrows encoder (disjoint from the caches).
         let color_attachment = wgpu::RenderPassColorAttachment {
-            view: pass_descriptor.color_view.unwrap_or(view),
+            view: pass_descriptor.color_view.unwrap_or(self.view),
             resolve_target: None,
             depth_slice: None,
             ops: wgpu::Operations {
@@ -261,7 +332,7 @@ impl<'a> RenderTargetCommander<'a> {
         };
         let color_attachments = [Some(color_attachment)];
 
-        let mut inner = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut inner = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: pass_descriptor.label,
             color_attachments: &color_attachments,
             depth_stencil_attachment: None,

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::time::Duration;
 
 use winit::{event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::WindowAttributes};
 
@@ -7,11 +7,11 @@ mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::AssetsManager, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, material::{MaterialLoader, MaterialTemplateLoader}, render::RenderContext, render_target::RenderTarget, sampler::SamplerLoader, shader::ShaderLoader, texture::TextureLoader}, time::Clock, window::WindowApi};
+use crate::{EngineResult, assets::AssetsManager, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, material::{MaterialLoader, MaterialTemplateLoader}, render::RenderContextRef, sampler::SamplerLoader, shader::ShaderLoader, texture::TextureLoader}, time::Clock, window::WindowApi};
 
 pub struct ApplicationContext {
     window_api: WindowApi,
-    render_ctx: Rc<RefCell<RenderContext>>,
+    pub render_ctx: RenderContextRef,
     pub assets_manager: AssetsManager,
 }
 
@@ -24,7 +24,7 @@ impl ApplicationContext {
 pub trait ApplicationProxy {
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()>;
     fn on_update(&mut self, ctx: &mut ApplicationContext, dt: Duration);
-    fn on_render(&mut self, ctx: &ApplicationContext, target: &mut RenderTarget<'_>);
+    fn on_render(&mut self, ctx: &ApplicationContext, frame: &mut Frame);
 }
 
 pub struct Application<P: ApplicationProxy> {
@@ -73,7 +73,7 @@ impl<P: ApplicationProxy> Application<P> {
         ;
         let window_api = WindowApi::new(event_loop, window_attributes)?;
         let gfx = GraphicsContext::new(window_api.window.clone(), self.gfx_config)?;
-        let render_ctx = Rc::new(RefCell::new(RenderContext::new(gfx)));
+        let render_ctx = RenderContextRef::new(gfx);
 
         let mut assets_manager = AssetsManager::new(render_ctx.clone());
         Self::init_assets_manager(&mut assets_manager);

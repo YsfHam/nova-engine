@@ -1,6 +1,6 @@
-use std::{any::{Any, TypeId}, cell::RefCell, collections::HashMap, rc::Rc};
+use std::{any::{Any, TypeId}, collections::HashMap};
 
-use crate::assets::{Asset, error::AssetError};
+use crate::{assets::{Asset, error::AssetError}, graphics::render::RenderContextRef};
 
 /// Context handed to every [`AssetLoader::load`] call.
 ///
@@ -18,7 +18,7 @@ use crate::assets::{Asset, error::AssetError};
 /// manager for the duration of a single `load()` call and is dropped before
 /// the manager inserts the resulting asset (see `AssetsManager::load`).
 pub struct LoadContext<'a> {
-    pub render_ctx: Rc<RefCell<crate::graphics::render::RenderContext>>,
+    pub render_ctx: RenderContextRef,
     pub assets: &'a crate::assets::AssetsManager,
 }
 

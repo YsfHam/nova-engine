@@ -1,5 +1,5 @@
-use std::{any::{Any, TypeId}, cell::RefCell, collections::HashMap, path::Path, rc::Rc};
-use crate::assets::{error::AssetError, handle::Handle, load::{AssetLoadersStorage, AssetLoader, LoadContext}, storage::AssetStorage};
+use std::{any::{Any, TypeId}, collections::HashMap, path::Path};
+use crate::{assets::{error::AssetError, handle::Handle, load::{AssetLoader, AssetLoadersStorage, LoadContext}, storage::AssetStorage}, graphics::render::RenderContextRef};
 
 pub mod handle;
 pub mod load;
@@ -40,11 +40,11 @@ pub trait Asset: 'static {
 pub struct AssetsManager {
     storages: HashMap<TypeId, Box<dyn Any>>,
     loaders: AssetLoadersStorage,
-    render_ctx: Rc<RefCell<crate::graphics::render::RenderContext>>,
+    render_ctx: RenderContextRef,
 }
 
 impl AssetsManager {
-    pub(crate) fn new(render_ctx: Rc<RefCell<crate::graphics::render::RenderContext>>) -> Self {
+    pub(crate) fn new(render_ctx: RenderContextRef) -> Self {
         Self {
             storages: HashMap::new(),
             loaders: AssetLoadersStorage::new(),

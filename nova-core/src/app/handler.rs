@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow}};
 
-use crate::{EngineResult, app::{Application, ApplicationContext, ApplicationProxy}, graphics::render_target::RenderTarget};
+use crate::{EngineResult, app::{Application, ApplicationContext, ApplicationProxy}};
 
 impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -53,7 +53,7 @@ impl<P: ApplicationProxy> Application<P> {
             }
 
             WindowEvent::Resized(size) => {
-                ctx.render_ctx.borrow().resize_surface(size.width, size.height);
+                ctx.render_ctx.get().resize_surface(size.width, size.height);
             }
 
             _ => ()
@@ -69,16 +69,19 @@ impl<P: ApplicationProxy> Application<P> {
         }
     }
 
-    fn on_render(proxy: &mut P, ctx: &mut ApplicationContext) -> EngineResult<()> {
-        let mut render_ctx = ctx.render_ctx.borrow_mut();
-        let frame_opt = render_ctx.begin_frame()?;
+    fn on_render(proxy: &mut P, ctx: &ApplicationContext) -> EngineResult<()> {
+        // begin_frame borrows the RefCell mutably, returns a Frame that owns
+        // the surface texture + view (no borrow of the RefCell). Guard drops.
+        let frame_opt = ctx.render_ctx.get_mut().begin_frame()?;
 
-        if let Some(frame) = frame_opt {
-            let mut target = RenderTarget::new(&mut render_ctx, frame.view());
-            proxy.on_render(ctx, &mut target);
-            target.submit();
-            let queue = render_ctx.queue().clone();
-            frame.present(&queue);
+        if let Some(mut frame) = frame_opt {
+            // The proxy records commands: it creates a RenderTarget (holding
+            // a RefMut guard) from the frame, records via its commander, and
+            // submits (consuming the target + dropping the guard).
+            proxy.on_render(ctx, &mut frame);
+            // The RefMut guard is dropped by now; present uses a fresh
+            // immutable borrow to access the queue.
+            frame.present(&ctx.render_ctx);
         }
         
         Ok(())

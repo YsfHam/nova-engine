@@ -1,6 +1,6 @@
 use nova_core::{
     EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, assets::resolve::ResolvedMaterial, graphics::{
-        buffer::VertexBufferLayout, color::Color, environment::{EnvironmentDescriptor, EnvironmentUniform}, material::{Material, MaterialMetadata, MaterialTemplate, MaterialTemplateMetadata}, render_pass::RenderPassDescriptor, render_target::RenderTarget, shader::{Shader, ShaderEntryPoint, ShaderMetadata, ShaderStage}, uniform::{MaterialUniformEntry, UniformBinding, UniformType, UniformValue},
+        buffer::VertexBufferLayout, color::Color, environment::{EnvironmentDescriptor, EnvironmentUniform}, frame::Frame, material::{Material, MaterialMetadata, MaterialTemplate, MaterialTemplateMetadata}, render_pass::RenderPassDescriptor, shader::{Shader, ShaderEntryPoint, ShaderMetadata, ShaderStage}, uniform::{MaterialUniformEntry, UniformBinding, UniformType, UniformValue},
     }, math::Vec4,
 };
 
@@ -18,8 +18,10 @@ impl ApplicationProxy for AppProxy {
     fn on_update(&mut self, _ctx: &mut ApplicationContext, _dt: std::time::Duration) {
     }
 
-    fn on_render(&mut self, ctx: &ApplicationContext, target: &mut RenderTarget<'_>) {
+    fn on_render(&mut self, ctx: &ApplicationContext, frame: &mut Frame) {
         let material_handle = self.material.expect("material loaded in on_init");
+
+        let mut target = frame.render_target(&ctx.render_ctx);
 
         let mut commander = target.commander(
             EnvironmentDescriptor::new()
@@ -73,6 +75,11 @@ impl ApplicationProxy for AppProxy {
             0..6,
             0..1,
         );
+
+        // Submit the recorded commands. This consumes the target and drops
+        // the RefMut guard, allowing frame.present to borrow the RefCell.
+        drop(commander);
+        target.submit();
     }
 
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()> {

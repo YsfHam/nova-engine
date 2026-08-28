@@ -204,7 +204,7 @@ impl AssetLoader for ShaderLoader {
             ShaderSource::Inline(src) => src.clone(),
         };
 
-        let module = ctx.render_ctx.borrow().device().create_shader_module(
+        let module = ctx.render_ctx.get().device().create_shader_module(
             wgpu::ShaderModuleDescriptor {
                 label: Some(&metadata.label),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
