@@ -70,8 +70,10 @@ impl BindGroupAllocator {
     /// Returns the cached bind group for `material_handle`, or builds + caches
     /// it from the uniform pool buffer + the resolved textures.
     ///
-    /// - `uniform_bindings`: the template's uniform layout (used to compute
-    ///   per-binding offsets within the material's allocation).
+    /// - The template's uniform layout is iterated; for each binding the pool
+    ///   is asked for a `BindingResource` by `(material handle, binding slot)`.
+    ///   The pool owns per-uniform allocations and offset alignment — the
+    ///   allocator does no offset math.
     /// - `texture_bindings`: the template's texture layout (binding slots).
     /// - `resolved_textures`: a map from texture binding slot to the resolved
     ///   `ResolvedTextureBinding` (view + sampler). The caller resolves these
@@ -105,10 +107,6 @@ impl BindGroupAllocator {
         material_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> wgpu::BindGroup {
         let material_handle = material.handle;
-        let allocation = self.uniform_pool.allocation(material_handle)
-            .expect("MaterialUniformPool has not been built with this material — call build_uniform_pool first");
-        let buffer = self.uniform_pool.buffer()
-            .expect("MaterialUniformPool buffer has not been built — call build_uniform_pool first");
 
         let template = material.material_template.material_template;
         let uniform_bindings = template.uniform_layout();
@@ -116,23 +114,15 @@ impl BindGroupAllocator {
 
         let mut entries = Vec::new();
 
-        // Per-uniform buffer entries. Each uniform binding in the template's
-        // layout gets its own BindGroupEntry, referencing the shared pool
-        // buffer at the material's base offset + the per-uniform offset.
-        // The per-uniform offset is computed sequentially from the layout
-        // order (matching how MaterialUniformPool::build packs them).
-        let mut uniform_offset = allocation.offset;
+        // Per-uniform buffer entries. The pool owns per-uniform allocations
+        // keyed by (material handle, binding slot); we simply ask it for each
+        // binding's `BindingResource`. The pool handles offset alignment to
+        // `min_uniform_buffer_offset_alignment` — no offset math here.
         for binding in uniform_bindings {
-            let size = binding.ty.size();
             entries.push(wgpu::BindGroupEntry {
                 binding: binding.binding_slot,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer,
-                    offset: uniform_offset,
-                    size: Some(std::num::NonZeroU64::new(size).unwrap()),
-                }),
+                resource: self.uniform_pool.binding_resource(material_handle, binding.binding_slot),
             });
-            uniform_offset += size;
         }
 
         // Texture + sampler entries.

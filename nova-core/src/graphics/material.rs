@@ -26,7 +26,7 @@ impl MaterialTemplate {
     }
 
     /// Handle to the fragment shader asset.
-    pub fn fragment_shader(&self) -> Handle<Shader> {
+    pub fn fragment_shader(&self) -> Option<Handle<Shader>> {
         self.metadata.fragment_shader
     }
 
@@ -75,7 +75,7 @@ impl Asset for MaterialTemplate {
 #[derive(Clone, Debug)]
 pub struct MaterialTemplateMetadata {
     pub vertex_shader: Handle<Shader>,
-    pub fragment_shader: Handle<Shader>,
+    pub fragment_shader: Option<Handle<Shader>>,
     pub vertex_buffer_layout: VertexBufferLayout,
     pub blend_state: BlendMode,
     pub depth_stencil: Option<DepthStencilConfig>,

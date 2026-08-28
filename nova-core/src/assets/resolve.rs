@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::{assets::{Asset, AssetsManager, handle::Handle}, graphics::{material::{Material, MaterialTemplate}, sampler::Sampler, shader::{FragmentShader, ShaderTypeMismatch, VertexShader}, texture::Texture}};
 
+#[derive(Debug)]
 pub enum ResolutionError {
     UnresolvedDependecy,
     ShaderTypeMismatch(ShaderTypeMismatch),
@@ -19,6 +20,7 @@ fn resolve_asset<A: Asset>(handle: Handle<A>, assets_manager: &AssetsManager) ->
     assets_manager.get_asset(handle).ok_or(ResolutionError::UnresolvedDependecy)
 }
 
+#[derive(Clone, Copy)]
 pub struct ResolvedTexture<'a> {
     pub sampler: &'a Sampler,
     pub texture: &'a Texture,
@@ -36,10 +38,11 @@ impl<'a> ResolvedTexture<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct ResolvedMaterialTemplate<'a> {
     pub handle: Handle<MaterialTemplate>,
     pub vertex_shader: VertexShader<'a>,
-    pub fragment_shader: FragmentShader<'a>,
+    pub fragment_shader: Option<FragmentShader<'a>>,
     pub material_template: &'a MaterialTemplate,
 }
 
@@ -47,17 +50,21 @@ impl<'a> ResolvedMaterialTemplate<'a> {
     pub fn new(handle: Handle<MaterialTemplate>, assets_manager: &'a AssetsManager) -> ResolutionResult<Self> {
         let template = resolve_asset(handle, assets_manager)?;
         let vertex_shader = resolve_asset(template.vertex_shader(), assets_manager)?;
-        let fragment_shader = resolve_asset(template.fragment_shader(), assets_manager)?;
+        let fragment_shader = match template.fragment_shader() {
+            Some(fs) => Some(resolve_asset(fs, assets_manager)?.try_into()?),
+            None => None
+        };
 
         Ok(Self {
             handle,
             vertex_shader: vertex_shader.try_into()?,
-            fragment_shader: fragment_shader.try_into()?,
+            fragment_shader,
             material_template: template,
         })
     }
 }
 
+#[derive(Clone)]
 pub struct ResolvedMaterial<'a> {
     pub handle: Handle<Material>,
     pub material: &'a Material,

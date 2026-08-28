@@ -57,25 +57,39 @@ impl PipelineCache {
 
         let template = desc.material_template;
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: template.vertex_shader.module(),
-                entry_point: Some(template.vertex_shader.entry_point()),
-                buffers: &[Some(template.material_template.vertex_buffer_layout().into())],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: template.fragment_shader.module(),
-                entry_point: Some(template.fragment_shader.entry_point()),
+        // Vertex buffer layouts: include the template's layout only when it
+        // declares attributes. An empty layout (shader-generated vertices via
+        // `vertex_index`) must be omitted, otherwise wgpu requires a vertex
+        // buffer to be bound at draw time.
+        let vbl = template.material_template.vertex_buffer_layout();
+        let vertex = wgpu::VertexState {
+            module: template.vertex_shader.module(),
+            entry_point: Some(template.vertex_shader.entry_point()),
+            buffers: &[vbl.try_into().ok()],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        };
+
+        let fragment = match &template.fragment_shader {
+            Some(fs) => Some(wgpu::FragmentState {
+                module: fs.module(),
+                entry_point: Some(fs.entry_point()),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: key.target_format,
                     blend: template.material_template.blend_state().into(),
                     write_mask: wgpu::ColorWrites::ALL,
-                })],
+                })]
             }),
+
+            None => None
+        };
+
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex,
+            fragment,
             primitive: wgpu::PrimitiveState {
                 topology: template.material_template.topology().into(),
                 strip_index_format: None,
@@ -127,7 +141,7 @@ impl PipelineCache {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: texture_binding.is_filterable() },
-                            view_dimension: texture_binding.view_dimension,
+                            view_dimension: texture_binding.view_dimension.into(),
                             multisampled: texture_binding.multisampled,
                         },
                         count: None,
@@ -136,7 +150,7 @@ impl PipelineCache {
                     wgpu::BindGroupLayoutEntry {
                         binding: texture_binding.sample_binding_slot,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(texture_binding.sampler_binding_type),
+                        ty: wgpu::BindingType::Sampler(texture_binding.sampler_binding_type.into()),
                         count: None,
                     }
                 ]

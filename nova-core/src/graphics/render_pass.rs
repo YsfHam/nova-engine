@@ -1,4 +1,4 @@
-use crate::graphics::{color::Color, render_target::RenderTarget};
+use crate::graphics::{color::Color, pipeline::Pipeline, render_target::RenderTarget};
 
 /// Describes how to configure a render pass.
 ///
@@ -109,10 +109,17 @@ impl<'frame> RenderPass<'frame> {
 
     // --- Draw methods (thin wrappers over wgpu::RenderPass) ---
 
-    pub fn set_pipeline(&mut self, pipeline: &wgpu::RenderPipeline) {
-        self.inner.set_pipeline(pipeline);
+    /// Sets the active render pipeline. Accepts the engine's `Pipeline`
+    /// (from `RenderTarget::get_or_compile_pipeline`) so callers don't reach
+    /// into `wgpu` directly.
+    pub fn set_pipeline(&mut self, pipeline: &Pipeline) {
+        self.inner.set_pipeline(&pipeline.pipeline);
     }
 
+    /// Binds a bind group to the given group index. `bind_group` is a raw
+    /// `wgpu::BindGroup` because bind groups are built per-frame/per-material
+    /// by the engine and returned by value from `RenderTarget` methods; the
+    /// caller holds the owned `BindGroup` for the pass duration.
     pub fn set_bind_group(&mut self, index: u32, bind_group: &wgpu::BindGroup, offsets: &[wgpu::DynamicOffset]) {
         self.inner.set_bind_group(index, bind_group, offsets);
     }
@@ -121,8 +128,8 @@ impl<'frame> RenderPass<'frame> {
         self.inner.set_vertex_buffer(slot, buffer);
     }
 
-    pub fn set_index_buffer(&mut self, buffer: wgpu::BufferSlice<'_>, index_format: wgpu::IndexFormat) {
-        self.inner.set_index_buffer(buffer, index_format);
+    pub fn set_index_buffer(&mut self, buffer: wgpu::BufferSlice<'_>, index_format: IndexFormat) {
+        self.inner.set_index_buffer(buffer, index_format.into());
     }
 
     pub fn draw(&mut self, vertices: std::ops::Range<u32>, instances: std::ops::Range<u32>) {
@@ -131,5 +138,21 @@ impl<'frame> RenderPass<'frame> {
 
     pub fn draw_indexed(&mut self, indices: std::ops::Range<u32>, base_vertex: i32, instances: std::ops::Range<u32>) {
         self.inner.draw_indexed(indices, base_vertex, instances);
+    }
+}
+
+/// Engine-native index format. Mirrors `wgpu::IndexFormat`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum IndexFormat {
+    Uint16,
+    Uint32,
+}
+
+impl From<IndexFormat> for wgpu::IndexFormat {
+    fn from(f: IndexFormat) -> Self {
+        match f {
+            IndexFormat::Uint16 => wgpu::IndexFormat::Uint16,
+            IndexFormat::Uint32 => wgpu::IndexFormat::Uint32,
+        }
     }
 }

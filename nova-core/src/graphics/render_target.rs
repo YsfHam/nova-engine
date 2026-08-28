@@ -132,6 +132,100 @@ impl<'a> RenderTarget<'a> {
         self.render_ctx.bind_group_allocator.is_uniform_pool_built()
     }
 
+    /// Draws a single material in one call: begins a render pass, compiles
+    /// (or fetches) the pipeline, builds (or fetches) the material bind
+    /// group, records the draw, and ends the pass.
+    ///
+    /// This convenience owns the borrow conflict between the render pass
+    /// (which borrows the encoder) and the pipeline/bind-group caches (in
+    /// `RenderContext`): the encoder and `render_ctx` are disjoint fields of
+    /// `RenderTarget`, so split-borrowing `&mut self` lets the pass and the
+    /// cache references coexist in one call — **no cloning of `wgpu`
+    /// handles**.
+    ///
+    /// For multi-material passes or finer control, use [`begin_render_pass`]
+    /// then [`get_or_compile_pipeline`] / [`get_or_create_bind_group`]; note
+    /// that those return references tied to the `RenderTarget` borrow, so the
+    /// pass must be dropped before calling them, or pre-resolve before
+    /// beginning the pass.
+    ///
+    /// - `pass_descriptor` — clear color / view config for the pass.
+    /// - `scene_bind_group` — group 0, from [`build_scene_bind_group`].
+    /// - `resolved_material` — the resolved material (template + textures).
+    /// - `vertices` / `instances` — the draw ranges.
+    pub fn draw_material(
+        &mut self,
+        pass_descriptor: RenderPassDescriptor<'_>,
+        scene_bind_group: &wgpu::BindGroup,
+        resolved_material: crate::assets::resolve::ResolvedMaterial<'_>,
+        vertices: std::ops::Range<u32>,
+        instances: std::ops::Range<u32>,
+    ) {
+        // Split-borrow `&mut self` into disjoint fields:
+        //   - render_ctx (holds pipeline_cache + bind_group_allocator + device)
+        //   - encoder (the command encoder, borrowed by the render pass)
+        //   - view (the target texture view)
+        // These never alias, so their references coexist in this scope.
+        let device = &self.render_ctx.gfx.device;
+        let scene_layout = &self.render_ctx.scene_bind_group_layout;
+        let surface_format = self.render_ctx.surface_format();
+        let pipeline_cache = &mut self.render_ctx.pipeline_cache;
+        let bind_group_allocator = &mut self.render_ctx.bind_group_allocator;
+        let encoder = &mut self.encoder;
+        let view = self.view;
+
+        // Compile (or fetch cached) the pipeline — borrows pipeline_cache.
+        let pipeline = pipeline_cache.get_or_compile(
+            device,
+            PipelineDescriptor {
+                material_template: resolved_material.material_template,
+                scene_bind_group_layout: scene_layout,
+                target_format: surface_format,
+            },
+        );
+
+        // Build (or fetch cached) the material bind group — borrows
+        // bind_group_allocator (disjoint from pipeline_cache).
+        let material_bind_group_layout = pipeline
+            .bind_group_layout
+            .as_ref()
+            .expect("material declares bindings → group 1 layout exists");
+        let material_bind_group = bind_group_allocator.get_or_create(
+            device,
+            resolved_material,
+            material_bind_group_layout,
+        );
+
+        // Begin the render pass — borrows encoder (disjoint from the caches).
+        let color_attachment = wgpu::RenderPassColorAttachment {
+            view: pass_descriptor.color_view.unwrap_or(view),
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: match pass_descriptor.color_clear {
+                    Some(color) => wgpu::LoadOp::Clear(color.into()),
+                    None => wgpu::LoadOp::Load,
+                },
+                store: wgpu::StoreOp::Store,
+            },
+        };
+        let color_attachments = [Some(color_attachment)];
+
+        let mut inner = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: pass_descriptor.label,
+            color_attachments: &color_attachments,
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+
+        inner.set_pipeline(&pipeline.pipeline);
+        inner.set_bind_group(0, scene_bind_group, &[]);
+        inner.set_bind_group(1, material_bind_group, &[]);
+        inner.draw(vertices, instances);
+    }
+
     // ─── Render pass ────────────────────────────────────────────────────
 
     /// Begins a render pass on this target's view (or a custom view if

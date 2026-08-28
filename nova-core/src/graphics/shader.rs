@@ -3,6 +3,7 @@ use std::{fs::read_to_string, path::PathBuf};
 use crate::assets::{Asset, error::AssetError, load::AssetLoader};
 
 
+#[derive(Debug)]
 pub struct Shader {
     module: wgpu::ShaderModule,
     metadata: ShaderMetadata,
@@ -65,6 +66,7 @@ pub enum ShaderEntryPoint {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct VertexShader<'a> {
     inner: &'a Shader,
     entry_point: &'a str,
@@ -100,6 +102,7 @@ impl<'a> TryFrom<&'a Shader> for VertexShader<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct FragmentShader<'a> {
     inner: &'a Shader,
     entry_point: &'a str,
@@ -120,12 +123,12 @@ impl<'a> TryFrom<&'a Shader> for FragmentShader<'a> {
 
     fn try_from(shader: &'a Shader) -> Result<Self, Self::Error> {
         let entry_point = match &shader.metadata.entry_point {
-            ShaderEntryPoint::Vertex(entry_point)
-            | ShaderEntryPoint::Both { vs_entry_point: entry_point, .. } => entry_point,
-            ShaderEntryPoint::Fragment(_) => return Err(ShaderTypeMismatch {
-                expected: ShaderStage::Vertex,
-                found: ShaderStage::Fragment
-            })
+            ShaderEntryPoint::Fragment(entry_point)
+            | ShaderEntryPoint::Both { fs_entry_point: entry_point, .. } => entry_point,
+            ShaderEntryPoint::Vertex(_) => return Err(ShaderTypeMismatch {
+                expected: ShaderStage::Fragment,
+                found: ShaderStage::Vertex,
+            }),
         };
 
         Ok(Self {
