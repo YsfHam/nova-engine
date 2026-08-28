@@ -1,8 +1,10 @@
 use std::cell::RefMut;
 
+use wgpu::util::DeviceExt;
+
 use crate::{
-    assets::resolve::ResolvedMaterialTemplate, graphics::{
-        bind::BindGroupAllocator, environment::EnvironmentDescriptor, pipeline::{Pipeline, PipelineCache, PipelineDescriptor}, render::RenderContext, render_pass::{RenderPass, RenderPassDescriptor}, texture::TextureFormat, uniform::{MaterialUniformEntry, UniformArena},
+    assets::resolve::ResolvedMaterial, graphics::{
+        bind::BindGroupAllocator, draw_batch::DrawBatch, environment::EnvironmentDescriptor, pipeline::{PipelineCache, PipelineDescriptor}, render::RenderContext, render_pass::{IndexFormat, RenderPass, RenderPassDescriptor}, texture::TextureFormat, uniform::{MaterialUniformEntry, UniformArena},
     },
 };
 
@@ -26,7 +28,7 @@ pub struct RenderTarget<'a> {
     /// Gives direct field access (device, pipeline_cache, bind_group_allocator).
     render_ctx: RefMut<'a, RenderContext>,
     pub(crate) view: &'a wgpu::TextureView,
-    pub(crate) encoder: wgpu::CommandEncoder,
+    pub(crate) encoder: Option<wgpu::CommandEncoder>,
     uniform_arena: UniformArena,
     scene_bind_group_layout: Option<wgpu::BindGroupLayout>,
 }
@@ -47,7 +49,7 @@ impl<'a> RenderTarget<'a> {
         Self {
             render_ctx,
             view,
-            encoder,
+            encoder: Some(encoder),
             uniform_arena: UniformArena::new(),
             scene_bind_group_layout: None,
         }
@@ -69,7 +71,7 @@ impl<'a> RenderTarget<'a> {
             bind_group_allocator: &mut render_ctx.bind_group_allocator,
             scene_bind_group_layout: self.scene_bind_group_layout.as_ref().unwrap(),
             uniform_arena: &mut self.uniform_arena,
-            encoder: &mut self.encoder,
+            encoder: self.encoder.as_mut().expect("Encoder must be Some"),
             view: self.view,
         }
     }
@@ -103,12 +105,19 @@ impl<'a> RenderTarget<'a> {
     /// This does **not** present the surface — that is the caller's
     /// responsibility (via [`Frame::present`](crate::graphics::frame::Frame::present))
     /// for on-screen rendering.
-    pub fn submit(self) {
-        let queue = self.render_ctx.queue();
-        queue.submit(std::iter::once(self.encoder.finish()));
+    fn submit(&mut self) {
+        if let Some(encoder) = self.encoder.take() {
+            self.render_ctx.submit_command_encoder(encoder);
+        }
     }
 }
 
+
+impl<'a> Drop for RenderTarget<'a> {
+    fn drop(&mut self) {
+        self.submit();
+    }
+} 
 
 /// An off-screen render target backed by a texture. Owns a `wgpu::Texture`
 /// and its `TextureView`, and produces a [`RenderTarget`] that renders into
@@ -202,33 +211,77 @@ pub struct RenderTargetCommander<'a> {
 }
 
 impl<'a> RenderTargetCommander<'a> {
+
+    pub fn submit_batches<I>(
+        mut self,
+        pass_descriptor: RenderPassDescriptor<'_>,
+        batches: I,
+        assets: &crate::assets::AssetsManager,
+    )
+    where
+        I: IntoIterator<Item = crate::graphics::draw_batch::DrawBatch>,
+    {
+
+        let batches: Vec<_> = batches.into_iter().collect();
+        if batches.is_empty() {
+            return;
+        }
+
+        let scene_bind_group = self
+            .build_scene_bind_group()
+            .expect("scene uniforms uploaded");
+
+        self.build_uniform_pool_from_batches(&batches, assets);
+
+
+        let Self {
+            device,
+            surface_format,
+            pipeline_cache,
+            bind_group_allocator,
+            scene_bind_group_layout,
+            encoder,
+            view,
+            ..
+        } = self;
+
+        let mut pass = RenderPass::new(encoder, view, pass_descriptor);
+        pass.set_bind_group(0, &scene_bind_group, &[]);
+
+        // Draw each batch in order — no sorting, no grouping.
+        for batch in batches {
+            //self.draw_batch(&mut pass, &batch, scene_bind_group, assets);
+
+            let (
+                vertex_buffer,
+                index_buffer,
+                instance_buffer
+            ) = Self::create_buffers(device, &batch);
+
+            // Resolve the material → template → pipeline + bind group.
+            let resolved_material = match crate::assets::resolve::ResolvedMaterial::new(
+                batch.material,
+                assets,
+            ) {
+                Ok(rm) => rm,
+                Err(_) => continue,
+            };
+
+            Self::set_pipeline(&mut pass, device, pipeline_cache, resolved_material, scene_bind_group_layout, surface_format, bind_group_allocator);
+            Self::draw_call(&mut pass, &vertex_buffer, &index_buffer, batch.index_count(), instance_buffer.as_ref(), 1);
+        }
+        // pass dropped here — ends the render pass.
+    }
+
     /// Builds the scene bind group (group 0) from all scene globals uploaded
     /// so far. Call once after uploading all scene globals, then bind the
     /// returned group before drawing. Returns `None` if nothing was uploaded.
-    pub fn build_scene_bind_group(&mut self) -> Option<wgpu::BindGroup> {
+    fn build_scene_bind_group(&mut self) -> Option<wgpu::BindGroup> {
         let scene_bind_group_layout = self.scene_bind_group_layout;
         self.uniform_arena.build_bind_group(
             self.device,
             scene_bind_group_layout
         )
-    }
-
-
-    // ─── Pipeline cache (group 1 layout) ────────────────────────────────
-
-    /// Looks up or compiles a [`Pipeline`] for the given resolved template.
-    /// The pipeline is cached in [`RenderContext`]; subsequent calls with
-    /// the same template + target format are cache hits.
-    pub fn get_or_compile_pipeline(
-        &mut self,
-        template: ResolvedMaterialTemplate<'_>,
-    ) -> &Pipeline {
-        let desc = PipelineDescriptor {
-            material_template: template,
-            scene_bind_group_layout: self.scene_bind_group_layout,
-            target_format: self.surface_format,
-        };
-        self.pipeline_cache.get_or_compile(self.device, desc)
     }
 
     // ─── Bind group allocator (group 1: material) ───────────────────────
@@ -238,161 +291,113 @@ impl<'a> RenderTargetCommander<'a> {
     /// Call this when the material set changes (materials added/removed).
     /// On subsequent frames with no material changes, the cached buffer is
     /// reused. This also clears the bind group cache.
-    pub fn build_uniform_pool<'b, I>(&mut self, materials: I)
+    fn build_uniform_pool<'b, I>(&mut self, materials: I)
     where
         I: IntoIterator<Item = MaterialUniformEntry<'b>>,
     {
         self.bind_group_allocator.build_uniform_pool(self.device, materials);
     }
 
-    /// Returns the cached bind group for a material, or builds + caches it
-    /// from the uniform pool buffer + the resolved textures.
-    ///
-    /// `material_bind_group_layout` comes from the pipeline (group 1 layout);
-    /// obtain it via [`Pipeline::bind_group_layout`](crate::graphics::pipeline::Pipeline::bind_group_layout).
-    pub fn get_or_create_bind_group(
-        &mut self,
-        material: crate::assets::resolve::ResolvedMaterial<'_>,
-        material_bind_group_layout: &wgpu::BindGroupLayout,
-    ) -> &wgpu::BindGroup {
-        self.bind_group_allocator.get_or_create(
-            self.device,
-            material,
-            material_bind_group_layout,
-        )
-    }
-
     /// Whether the material uniform pool has been built.
-    pub fn is_uniform_pool_built(&self) -> bool {
+    fn is_uniform_pool_built(&self) -> bool {
         self.bind_group_allocator.is_uniform_pool_built()
     }
 
-    /// Draws a single material in one call: begins a render pass, compiles
-    /// (or fetches) the pipeline, builds (or fetches) the material bind
-    /// group, records the draw, and ends the pass.
-    ///
-    /// This convenience owns the borrow conflict between the render pass
-    /// (which borrows the encoder) and the pipeline/bind-group caches (in
-    /// `RenderContext`): the encoder and `render_ctx` are disjoint fields of
-    /// `RenderTarget`, so split-borrowing `&mut self` lets the pass and the
-    /// cache references coexist in one call — **no cloning of `wgpu`
-    /// handles**.
-    ///
-    /// For multi-material passes or finer control, use [`begin_render_pass`]
-    /// then [`get_or_compile_pipeline`] / [`get_or_create_bind_group`]; note
-    /// that those return references tied to the `RenderTarget` borrow, so the
-    /// pass must be dropped before calling them, or pre-resolve before
-    /// beginning the pass.
-    ///
-    /// - `pass_descriptor` — clear color / view config for the pass.
-    /// - `scene_bind_group` — group 0, from [`build_scene_bind_group`].
-    /// - `resolved_material` — the resolved material (template + textures).
-    /// - `vertices` / `instances` — the draw ranges.
-    pub fn draw_material(
-        &mut self,
-        pass_descriptor: RenderPassDescriptor<'_>,
-        scene_bind_group: &wgpu::BindGroup,
-        resolved_material: crate::assets::resolve::ResolvedMaterial<'_>,
-        vertices: std::ops::Range<u32>,
-        instances: std::ops::Range<u32>,
-    ) {
-        // The commander's fields are already split-borrowed from the
-        // RenderContext guard, so pipeline_cache, bind_group_allocator,
-        // device, and encoder are all disjoint — they coexist freely.
-        let pipeline = self.pipeline_cache.get_or_compile(
-            self.device,
-            PipelineDescriptor {
-                material_template: resolved_material.material_template,
-                scene_bind_group_layout: self.scene_bind_group_layout,
-                target_format: self.surface_format,
-            },
-        );
 
-        let material_bind_group_layout = pipeline
-            .bind_group_layout
-            .as_ref()
-            .expect("material declares bindings → group 1 layout exists");
-        let material_bind_group = self.bind_group_allocator.get_or_create(
-            self.device,
-            resolved_material,
-            material_bind_group_layout,
-        );
+    fn build_uniform_pool_from_batches(&mut self, batches: &[DrawBatch], assets: &crate::assets::AssetsManager) {
+        if self.is_uniform_pool_built() {
+            return;
+        }
 
-        let color_attachment = wgpu::RenderPassColorAttachment {
-            view: pass_descriptor.color_view.unwrap_or(self.view),
-            resolve_target: None,
-            depth_slice: None,
-            ops: wgpu::Operations {
-                load: match pass_descriptor.color_clear {
-                    Some(color) => wgpu::LoadOp::Clear(color.into()),
-                    None => wgpu::LoadOp::Load,
-                },
-                store: wgpu::StoreOp::Store,
-            },
-        };
-        let color_attachments = [Some(color_attachment)];
+        let materials = batches.iter().filter_map(|batch| {
+            let material_handle = batch.material;
+                let material = assets
+                    .get_asset(material_handle)?;
+                let template = assets
+                    .get_asset(material.template())?;
 
-        let mut inner = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: pass_descriptor.label,
-            color_attachments: &color_attachments,
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
+                Some(MaterialUniformEntry {
+                    handle: material_handle,
+                    material,
+                    template,
+                })
         });
 
-        inner.set_pipeline(&pipeline.pipeline);
-        inner.set_bind_group(0, scene_bind_group, &[]);
-        inner.set_bind_group(1, material_bind_group, &[]);
-        inner.draw(vertices, instances);
+        self.build_uniform_pool(materials);
     }
 
-    // ─── Render pass ────────────────────────────────────────────────────
+    fn create_buffers(device: &wgpu::Device, batch: &DrawBatch) -> (wgpu::Buffer, wgpu::Buffer, Option<wgpu::Buffer>) {
+        let vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("DrawBatch vertex buffer"),
+                contents: &batch.vertices,
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let index_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("DrawBatch index buffer"),
+                contents: bytemuck::cast_slice(&batch.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
 
-    /// Begins a render pass on this target's view (or a custom view if
-    /// `desc.color_view` is `Some`). Borrows this `RenderTarget` mutably for
-    /// the pass duration (wgpu requirement: one pass at a time).
-    pub fn begin_render_pass(&mut self, desc: RenderPassDescriptor<'_>) -> RenderPass<'_> {
-        let color_view = desc.color_view.unwrap_or(&self.view);
+        let instance_buffer = batch.instances.as_ref().map(|inst_data| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("DrawBatch instance buffer"),
+                    contents: inst_data,
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+            });
 
-        let color_attachment = wgpu::RenderPassColorAttachment {
-            view: color_view,
-            resolve_target: None,
-            depth_slice: None,
-            ops: wgpu::Operations {
-                load: match desc.color_clear {
-                    Some(color) => wgpu::LoadOp::Clear(color.into()),
-                    None => wgpu::LoadOp::Load,
+        
+        (vertex_buffer, index_buffer, instance_buffer)
+    }
+
+    fn set_pipeline(
+        pass: &mut RenderPass, 
+        device: &wgpu::Device, 
+        pipeline_cache: &mut PipelineCache,
+        resolved_material: ResolvedMaterial<'_>, 
+        scene_layout: &wgpu::BindGroupLayout,
+        surface_format: wgpu::TextureFormat,
+        bind_group_allocator: &mut BindGroupAllocator,
+    ) {
+        let pipeline = pipeline_cache.get_or_compile(
+                device,
+                PipelineDescriptor {
+                    material_template: resolved_material.material_template,
+                    scene_bind_group_layout: scene_layout,
+                    target_format: surface_format,
                 },
-                store: wgpu::StoreOp::Store,
-            },
-        };
-        let color_attachments = [Some(color_attachment)];
+            );
 
-        // Depth attachment: for now, depth_clear only signals intent.
-        // The actual depth texture view comes from the depth pool (Step 2/C6).
-        // Until the pool exists, depth_clear is accepted but not wired.
-        let depth_stencil_attachment = desc.depth_clear.map(|depth| {
-            wgpu::RenderPassDepthStencilAttachment {
-                // TODO: replace with depth texture from pool once implemented
-                view: &self.view, // placeholder — will panic if used; see note
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(depth),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
+        let material_bind_group_layout = pipeline.bind_group_layout.as_ref();
+        pass.set_pipeline(&pipeline);
+
+        if let Some(bgl) = material_bind_group_layout {
+            let bg = bind_group_allocator.get_or_create(
+                device,
+                resolved_material,
+                bgl,
+            );
+            pass.set_bind_group(1, bg, &[]);
+        }
+    }
+
+    fn draw_call(
+        pass: &mut RenderPass,
+        vertex_buffer: &wgpu::Buffer,
+        index_buffer: &wgpu::Buffer,
+        index_count: u32,
+        instance_buffer: Option<&wgpu::Buffer>,
+        instance_count: u32
+    ) {
+        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            pass.set_index_buffer(index_buffer.slice(..), IndexFormat::Uint16);
+
+            if let Some(ref inst_buf) = instance_buffer {
+                pass.set_vertex_buffer(1, inst_buf.slice(..));
             }
-        });
 
-        let inner = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: desc.label,
-            color_attachments: &color_attachments,
-            depth_stencil_attachment,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        });
-
-        RenderPass { inner }
+        pass.draw_indexed(0..index_count, 0, 0..instance_count);
     }
 }

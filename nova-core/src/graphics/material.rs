@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use crate::{
     assets::{Asset, error::AssetError, handle::Handle, load::{AssetLoader, LoadContext}},
     graphics::{
-        buffer::VertexBufferLayout,
+        buffer::BufferLayout,
         shader::Shader,
         texture::Texture,
         uniform::{UniformBinding, UniformValue},
@@ -30,8 +30,8 @@ impl MaterialTemplate {
         self.metadata.fragment_shader
     }
 
-    pub fn vertex_buffer_layout(&self) -> &VertexBufferLayout {
-        &self.metadata.vertex_buffer_layout
+    pub fn buffer_layout(&self) -> &BufferLayout {
+        &self.metadata.buffer_layout
     }
 
     pub fn blend_state(&self) -> BlendMode {
@@ -76,7 +76,7 @@ impl Asset for MaterialTemplate {
 pub struct MaterialTemplateMetadata {
     pub vertex_shader: Handle<Shader>,
     pub fragment_shader: Option<Handle<Shader>>,
-    pub vertex_buffer_layout: VertexBufferLayout,
+    pub buffer_layout: BufferLayout,
     pub blend_state: BlendMode,
     pub depth_stencil: Option<DepthStencilConfig>,
     pub topology: Topology,

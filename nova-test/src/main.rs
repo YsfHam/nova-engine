@@ -1,6 +1,6 @@
 use nova_core::{
-    EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, assets::resolve::ResolvedMaterial, graphics::{
-        buffer::VertexBufferLayout, color::Color, environment::{EnvironmentDescriptor, EnvironmentUniform}, frame::Frame, material::{Material, MaterialMetadata, MaterialTemplate, MaterialTemplateMetadata}, render_pass::RenderPassDescriptor, shader::{Shader, ShaderEntryPoint, ShaderMetadata, ShaderStage}, uniform::{MaterialUniformEntry, UniformBinding, UniformType, UniformValue},
+    EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, graphics::{
+        buffer::{VertexBufferLayout, VertexFormat}, color::Color, draw_batch::DrawBatch, environment::{EnvironmentDescriptor, EnvironmentUniform}, frame::Frame, material::{Material, MaterialMetadata, MaterialTemplate, MaterialTemplateMetadata}, render_pass::RenderPassDescriptor, shader::{Shader, ShaderEntryPoint, ShaderMetadata, ShaderStage}, uniform::{UniformBinding, UniformType, UniformValue},
     }, math::Vec4,
 };
 
@@ -23,7 +23,7 @@ impl ApplicationProxy for AppProxy {
 
         let mut target = frame.render_target(&ctx.render_ctx);
 
-        let mut commander = target.commander(
+        let commander = target.commander(
             EnvironmentDescriptor::new()
             .add_uniform(EnvironmentUniform {
                 binding_slot: 0,
@@ -37,49 +37,26 @@ impl ApplicationProxy for AppProxy {
             })
         );
 
-        let scene_bind_group = commander
-            .build_scene_bind_group()
-            .expect("scene uniforms uploaded");
-
-        // Build the material uniform pool once (first frame). Materials are
-        // immutable, so the pool is stable afterwards.
-        if !commander.is_uniform_pool_built() {
-            let material = ctx
-                .assets_manager
-                .get_asset(material_handle)
-                .expect("material asset");
-            let template = ctx
-                .assets_manager
-                .get_asset(material.template())
-                .expect("material template asset");
-            commander.build_uniform_pool([MaterialUniformEntry {
-                handle: material_handle,
-                material,
-                template,
-            }]);
-        }
-
-        // Resolve the material (template + shaders + textures).
-        let resolved_material =
-            ResolvedMaterial::new(material_handle, &ctx.assets_manager)
-                .expect("material resolves");
-
-        // Begin the pass, compile the pipeline, build the bind group, and
-        // draw — all in one call. `draw_material` split-borrows the encoder
-        // and the RenderContext caches (disjoint fields) so no wgpu handles
-        // are cloned.
-        commander.draw_material(
-            RenderPassDescriptor::default().with_color_clear(Color::BLACK),
-            &scene_bind_group,
-            resolved_material,
-            0..6,
-            0..1,
+        // Quad geometry: 4 vertices (position: vec2<f32>), 6 u16 indices (2 tris).
+        let vertices: [[f32; 2]; 4] = [
+            [-0.5,  0.5],  // TL
+            [-0.5, -0.5],  // BL
+             [0.5, -0.5],  // BR
+             [0.5,  0.5],  // TR
+        ];
+        let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
+        let batch = DrawBatch::with_vertices(
+            material_handle,
+            &vertices,
+            indices.to_vec(),
         );
-
-        // Submit the recorded commands. This consumes the target and drops
-        // the RefMut guard, allowing frame.present to borrow the RefCell.
-        drop(commander);
-        target.submit();
+        // Submit all batches in one render pass. The commander groups by
+        // template (pipeline reuse) and merges contiguous same-material runs.
+        commander.submit_batches(
+            RenderPassDescriptor::default().with_color_clear(Color::BLACK),
+            [batch],
+            &ctx.assets_manager,
+        );
     }
 
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()> {
@@ -93,14 +70,14 @@ impl ApplicationProxy for AppProxy {
             },
         ))?;
 
-        // Material template: no vertex buffer (quad generated in shader),
+        // Material template: one vertex attribute (position: Float32x2),
         // no blending, no depth, triangle list, one fragment uniform (color),
         // no textures.
         let template = ctx.assets_manager.load::<MaterialTemplate>(
             MaterialTemplateMetadata {
                 vertex_shader: shader,
                 fragment_shader: Some(shader),
-                vertex_buffer_layout: VertexBufferLayout::new(&[]),
+                buffer_layout: VertexBufferLayout::new(&[VertexFormat::Float32x2], 0),
                 blend_state: Default::default(),
                 depth_stencil: None,
                 topology: Default::default(),

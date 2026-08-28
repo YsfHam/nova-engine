@@ -1,4 +1,4 @@
-use crate::graphics::{color::Color, pipeline::Pipeline, render_target::RenderTarget};
+use crate::graphics::{color::Color, pipeline::Pipeline};
 
 /// Describes how to configure a render pass.
 ///
@@ -9,7 +9,6 @@ use crate::graphics::{color::Color, pipeline::Pipeline, render_target::RenderTar
 pub struct RenderPassDescriptor<'a> {
     pub label: Option<&'a str>,
     pub color_clear: Option<Color>,
-    pub color_view: Option<&'a wgpu::TextureView>,
     pub depth_clear: Option<f32>,
 }
 
@@ -19,7 +18,6 @@ impl<'a> RenderPassDescriptor<'a> {
         Self {
             label: None,
             color_clear: Some(Color::BLACK),
-            color_view: None,
             depth_clear: None,
         }
     }
@@ -33,12 +31,6 @@ impl<'a> RenderPassDescriptor<'a> {
     /// Clear the color target to `color`. Omit to load existing content instead.
     pub fn with_color_clear(mut self, color: Color) -> Self {
         self.color_clear = Some(color);
-        self
-    }
-
-    /// Render to a custom texture view instead of the render target's view.
-    pub fn with_color_view(mut self, view: &'a wgpu::TextureView) -> Self {
-        self.color_view = Some(view);
         self
     }
 
@@ -63,11 +55,10 @@ pub struct RenderPass<'frame> {
 
 impl<'frame> RenderPass<'frame> {
 
-    pub fn new(render_target: &'frame mut RenderTarget<'_>, desc: RenderPassDescriptor<'frame>) -> Self {
-        let color_view = desc.color_view.unwrap_or(render_target.view);
+    pub fn new(encoder: &'frame mut wgpu::CommandEncoder, view: &wgpu::TextureView, desc: RenderPassDescriptor<'frame>) -> Self {
 
         let color_attachment = wgpu::RenderPassColorAttachment {
-            view: color_view,
+            view,
             resolve_target: None,
             depth_slice: None,
             ops: wgpu::Operations {
@@ -86,7 +77,7 @@ impl<'frame> RenderPass<'frame> {
         let depth_stencil_attachment = desc.depth_clear.map(|depth| {
             wgpu::RenderPassDepthStencilAttachment {
                 // TODO: replace with depth texture from pool once implemented
-                view: render_target.view, // placeholder — will panic if used; see note
+                view, // placeholder — will panic if used; see note
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(depth),
                     store: wgpu::StoreOp::Store,
@@ -95,7 +86,7 @@ impl<'frame> RenderPass<'frame> {
             }
         });
 
-        let inner = render_target.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let inner = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: desc.label,
             color_attachments: &color_attachments,
             depth_stencil_attachment,

@@ -75,6 +75,8 @@ pub struct RenderContext {
     pub(crate) gfx: GraphicsContext,
     pub(crate) pipeline_cache: PipelineCache,
     pub(crate) bind_group_allocator: BindGroupAllocator,
+
+    command_buffers: Option<Vec<wgpu::CommandBuffer>>,
 }
 
 impl RenderContext {
@@ -83,6 +85,7 @@ impl RenderContext {
             pipeline_cache: PipelineCache::new(),
             bind_group_allocator: BindGroupAllocator::new(),
             gfx,
+            command_buffers: Some(Vec::new()),
         }
     }
 
@@ -128,6 +131,19 @@ impl RenderContext {
                 Ok(Some(Frame::new(output)))
             }
             None => Ok(None)
+        }
+    }
+
+    pub(crate) fn submit_command_encoder(&mut self, encoder: wgpu::CommandEncoder) {
+        if let Some(command_buffers) = self.command_buffers.as_mut() {
+            command_buffers.push(encoder.finish());
+        }
+    }
+
+    pub(crate) fn submit_commands(&mut self) {
+        let queue = &self.gfx.queue;
+        if let Some(command_buffers) = self.command_buffers.replace(Vec::new()) {
+            queue.submit(command_buffers);
         }
     }
 

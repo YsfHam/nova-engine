@@ -1,7 +1,48 @@
 #[derive(Clone, Debug)]
-pub struct VertexBufferLayout {
+pub struct BufferLayout {
     attributes: Vec<wgpu::VertexAttribute>,
-    vertex_stride: u64,
+    stride: u64,
+    step_mode: BufferStepMode,
+}
+
+pub struct VertexBufferLayout {
+    _private: ()
+}
+
+impl VertexBufferLayout {
+    pub fn new(attributes_formats: &[VertexFormat], location_offset: u32) -> BufferLayout {
+        BufferLayout::new(attributes_formats, BufferStepMode::Vertex, location_offset)
+    }
+}
+
+pub struct InstanceBufferLayout {
+    _private: ()
+}
+
+impl InstanceBufferLayout {
+    pub fn new(attributes_formats: &[VertexFormat], location_offset: u32) -> BufferLayout {
+        BufferLayout::new(attributes_formats, BufferStepMode::Instance, location_offset)
+    }
+}
+
+
+/// Whether a [`BufferLayout`] describes per-vertex data or per-instance data.
+/// Mirrors `wgpu::VertexStepMode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferStepMode {
+    /// The buffer is advanced per vertex (the usual vertex buffer).
+    Vertex,
+    /// The buffer is advanced per instance (instanced attribute buffer).
+    Instance,
+}
+
+impl From<BufferStepMode> for wgpu::VertexStepMode {
+    fn from(m: BufferStepMode) -> Self {
+        match m {
+            BufferStepMode::Vertex => wgpu::VertexStepMode::Vertex,
+            BufferStepMode::Instance => wgpu::VertexStepMode::Instance,
+        }
+    }
 }
 
 /// Engine-native vertex attribute format. A serializable mirror of the
@@ -47,19 +88,18 @@ impl From<VertexFormat> for wgpu::VertexFormat {
     }
 }
 
-impl VertexBufferLayout {
-
+impl BufferLayout {
     pub fn empty() -> Self {
-        Self::new(&[])
+        Self::new(&[], BufferStepMode::Vertex, 0)
     }
 
-    /// Builds a layout from an ordered list of attribute formats. Each
-    /// attribute is assigned a sequential `shader_location` (0, 1, 2, ...),
-    /// and the stride is the sum of the attribute sizes.
-    ///
-    pub fn new(attributes_formats: &[VertexFormat]) -> Self {
+    /// Builds a vertex buffer layout (per-vertex step mode) from an ordered
+    /// list of attribute formats. Each attribute is assigned a sequential
+    /// `shader_location` (0, 1, 2, ...), and the stride is the sum of the
+    /// attribute sizes.
+    fn new(attributes_formats: &[VertexFormat], step_mode: BufferStepMode, location_offset: u32) -> Self {
         let mut offset = 0;
-        let mut shader_location = 0;
+        let mut shader_location = location_offset;
         let mut attributes = vec![];
 
         for format in attributes_formats {
@@ -74,7 +114,8 @@ impl VertexBufferLayout {
 
         Self {
             attributes,
-            vertex_stride: offset,
+            stride: offset,
+            step_mode,
         }
     }
 
@@ -84,9 +125,20 @@ impl VertexBufferLayout {
     pub fn is_empty(&self) -> bool {
         self.attributes.is_empty()
     }
+
+    /// The byte stride between consecutive elements (vertices or instances)
+    /// in a buffer using this layout. This is the sum of all attribute sizes.
+    pub fn stride(&self) -> u64 {
+        self.stride
+    }
+
+    /// The step mode of this layout (per-vertex or per-instance).
+    pub fn step_mode(&self) -> BufferStepMode {
+        self.step_mode
+    }
 }
 
-impl<'a> TryInto<wgpu::VertexBufferLayout<'a>> for &'a VertexBufferLayout {
+impl<'a> TryInto<wgpu::VertexBufferLayout<'a>> for &'a BufferLayout {
     type Error = ();
 
     fn try_into(self) -> Result<wgpu::VertexBufferLayout<'a>, Self::Error> {
@@ -95,8 +147,8 @@ impl<'a> TryInto<wgpu::VertexBufferLayout<'a>> for &'a VertexBufferLayout {
         }
         else {
             Ok(wgpu::VertexBufferLayout {
-                array_stride: self.vertex_stride,
-                step_mode: wgpu::VertexStepMode::Vertex,
+                array_stride: self.stride,
+                step_mode: self.step_mode.into(),
                 attributes: &self.attributes
             })
         }

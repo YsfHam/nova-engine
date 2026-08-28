@@ -52,3 +52,17 @@ impl<A: Asset> PartialEq for Handle<A> {
 
 impl<A: Asset> Eq for Handle<A> {
 }
+
+impl<A: Asset> PartialOrd for Handle<A> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<A: Asset> Ord for Handle<A> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.index
+            .cmp(&other.index)
+            .then(self.generation.cmp(&other.generation))
+    }
+}

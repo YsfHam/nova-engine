@@ -61,7 +61,7 @@ impl PipelineCache {
         // declares attributes. An empty layout (shader-generated vertices via
         // `vertex_index`) must be omitted, otherwise wgpu requires a vertex
         // buffer to be bound at draw time.
-        let vbl = template.material_template.vertex_buffer_layout();
+        let vbl = template.material_template.buffer_layout();
         let vertex = wgpu::VertexState {
             module: template.vertex_shader.module(),
             entry_point: Some(template.vertex_shader.entry_point()),

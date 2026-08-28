@@ -81,6 +81,8 @@ impl<P: ApplicationProxy> Application<P> {
             proxy.on_render(ctx, &mut frame);
             // The RefMut guard is dropped by now; present uses a fresh
             // immutable borrow to access the queue.
+
+            ctx.render_ctx.get_mut().submit_commands();
             frame.present(&ctx.render_ctx);
         }
         

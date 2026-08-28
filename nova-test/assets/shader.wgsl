@@ -1,8 +1,7 @@
-// Quad shader — colored quad generated in the vertex shader.
+// Quad shader — colored quad with vertex buffer.
 //
-// No vertex buffer: the quad's two triangles (6 vertices) are produced from
-// `vertex_index`. The fragment color comes from a material uniform in
-// group 1, binding 0 (a `vec4<f32>`).
+// Vertex data comes from a vertex buffer (position: vec2<f32>). The fragment
+// color comes from a material uniform in group 1, binding 0 (a vec4<f32>).
 
 // Group 0 (scene): binding 0 = camera (mat4), binding 1 = time (f32).
 // (Declared but unused for this 2D quad — the quad fills the screen.)
@@ -21,31 +20,18 @@ struct MaterialUniform {
 };
 @group(1) @binding(0) var<uniform> material: MaterialUniform;
 
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+};
+
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
 };
 
-// Two triangles covering a centered quad in clip space, selected by
-// vertex_index. No vertex buffer needed.
-//
-//  vertex_index:  0   1   2   3   4   5
-//  position:     TL  TR  BR  TL  BR  BL
-//
-// with x,y in [-0.5, 0.5].
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-0.5,  0.5),  // TL
-        vec2<f32>(-0.5, -0.5),  // BL
-        vec2<f32>( 0.5, -0.5),  // BR
-        vec2<f32>( 0.5,  0.5),  // TR
-        vec2<f32>(-0.5,  0.5),  // TL
-        vec2<f32>( 0.5, -0.5),  // BR
-    );
-
+fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    let p = positions[vi];
-    out.clip_position = vec4<f32>(p, 0.0, 1.0);
+    out.clip_position = vec4<f32>(in.position, 0.0, 1.0);
     return out;
 }
 
