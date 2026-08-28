@@ -8,7 +8,8 @@
 
 "settings": {
 	"chat.tools.terminal.autoApprove": {
-		"cargo check": true
+		"cargo check": true,
+		"cargo build": true
 	}
 }
 }
