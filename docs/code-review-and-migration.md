@@ -279,6 +279,7 @@ frame.present(&queue)           → surface present
 | Step 7 — `MaterialTemplate` + `Material` | ✅ Done | Material recipe/instance model, engine-native enums, `LoadContext` borrow refinement, shader entry points |
 | Step 8 — `PipelineCache` + `BindGroupAllocator` + `RenderTarget` | ✅ Done | Pipeline caching by template, per-material bind group cache, `UniformArena` (group 0), `MaterialUniformPool`, `RenderTarget` refactor, immutable materials with load-time validation |
 | Step 9 — First render test (colored quad) | ✅ Done | **Colored quad on screen** — end-to-end pipeline proven; wgpu leaks wrapped; `draw_material` convenience; uniform offset alignment; per-uniform pool allocations; optional fragment shader |
+| Step 10 — `DrawBatch` + `submit_batches` | ✅ Done | Pure-data `DrawBatch` (u16 indices, `new_with_vertices`); `submit_batches` (consumes commander, no sort, auto-builds pool+scene); `BufferLayout` + `VertexBufferLayout`/`InstanceBufferLayout` constructors; batched command submission |
 
 **Critical issues resolved:** C1 (no `on_render`), C2 (no `RenderContext`), C3 (no `Frame`/`RenderPass`), C4 (surface loss), C5 (present mode), H1 (no loaders), H2 (loaders use `GraphicsContext`), H3 (`ApplicationContext` leaks GPU), H4 (handler reaches into `GraphicsContext`), H5 (loader registration hook), L1 (`Handle` non-generational), L2 (`AssetStorage` panics), L3 (`AssetError` no context), L6 (missing deps).
 
@@ -320,18 +321,34 @@ Each step is self-contained and leaves the codebase in a working state.
 
 ---
 
-### Step 10 — `DrawBatch` + `submit_draw_batch`
+### ✅ Step 10 — `DrawBatch` + `submit_batches`
 
 **Goal:** The dimension-agnostic submission contract is ready for batchers.
 
-**Tasks:**
-1. Define `DrawBatch` in `nova-core`: `{ template_key, material, bind_groups, vertex_buffer, vertex_count, instance_count, uniform_data, render_pass_descriptor }`.
-2. Implement `RenderTarget::submit_draw_batch(batch)` — pipeline lookup, bind group creation, uniform upload, command recording.
-3. This is the seam where `nova-2d`/`nova-3d` batchers will plug in.
+**What was done:**
+1. **`DrawBatch`** (`graphics/draw_batch.rs`) — pure data struct: `Handle<Material>` (unresolved) + raw `Vec<u8>` vertex/index/instance data. Indices are always `u16` (Uint16). No GPU resources — cheap to clone, collect, sort. The commander uploads to GPU buffers at submit time.
+2. **`RenderTargetCommander::submit_batches`** — submits multiple batches in one render pass:
+   - **Consumes the commander** (`mut self`) — the commander is a one-shot scope: create, submit, done.
+   - **No sorting or grouping** — batches are drawn in the exact order given. The caller is responsible for ordering (layer sorting, template grouping for pipeline reuse).
+   - Each batch gets its own vertex/index buffer upload and `draw_indexed` call.
+   - **Auto-builds the scene bind group** and the **uniform pool from batches** internally — the caller no longer manually builds the pool or scene bind group.
+   - One render pass (clear config set once). Destructures `self` to split-borrow all fields (encoder, pipeline_cache, bind_group_allocator, device) so they coexist.
+   - Takes `&AssetsManager` for resolving `Handle<Material>` → pipeline + bind group at draw time.
+   - Helper methods: `create_buffers`, `set_pipeline`, `draw_call` — extracted for clarity.
+3. **`BufferLayout`** (renamed from `VertexBufferLayout`) — now carries `BufferStepMode` (Vertex vs Instance) and a `location_offset` for multi-buffer vertex layouts. `stride()` and `step_mode()` accessors.
+   - **`VertexBufferLayout`** and **`InstanceBufferLayout`** are zero-sized constructor types that produce `BufferLayout` with the right step mode + location offset.
+4. **`DrawBatch`** — indices stored as `Vec<u16>` (not raw bytes). `new_with_vertices<V: NoUninit>` ergonomic constructor using bytemuck. `add_vertices` for incremental building. `new(material)` creates an empty batch for incremental use.
+5. **Batched command submission** — `RenderContext` now accumulates finished `CommandBuffer`s in a `Vec` (`submit_command_encoder`), and `submit_commands` submits them all in one `queue.submit` call. The handler calls `submit_commands()` after the proxy finishes. `RenderTarget::submit(&mut self)` pushes its encoder into the batch (encoder is now `Option`).
+6. **`RenderPass::new(encoder, view, desc)`** — constructor that takes the split-borrowed encoder + view directly, avoiding the `&mut self` borrow conflict.
+7. **`nova-test` updated** — shader uses a vertex buffer (`@location(0) position: vec2<f32>`), 4 vertices + 6 u16 indices. `on_render` builds a `DrawBatch` via `new_with_vertices` and calls `submit_batches`.
 
-**Deliverable:** `RenderTarget::submit_draw_batch()` works. The contract for dimension-specific batchers is ready.
+**Deliverable:** `submit_batches()` works. The contract for dimension-specific batchers is ready. Quad still renders.
 
-**Dependencies:** Steps 7–8 (materials + pipeline cache).
+**Dependencies:** Steps 7–9 (materials + pipeline cache + first render).
+
+**Files added:** `graphics/draw_batch.rs`
+**Files modified:** `graphics/render_target.rs`, `graphics/buffer.rs`, `graphics/render_pass.rs`, `graphics/render.rs`, `assets/handle.rs`, `graphics.rs`, `app/handler.rs`
+**Files modified (nova-test):** `src/main.rs`, `assets/shader.wgsl`
 
 ---
 
@@ -437,10 +454,10 @@ Each step is self-contained and leaves the codebase in a working state.
 
 ✅ Step 8  — PipelineCache + BindGroupAllocator + RenderTarget refactor
 ✅ Step 9  — First render test (colored quad)                  ← END-TO-END MILESTONE
-⬜ Step 10 — DrawBatch + submit_draw_batch (batcher contract)
+✅ Step 10 — DrawBatch + submit_batches (batcher contract)
 ⬜ Step 11 — nova-2d crate (sprite batching, Camera2D)
 ⬜ Step 12 — nova-3d crate (meshes, Camera3D, lights, depth pool)
 ⬜ Step 13+— Polish (hot-reload, umbrella crate, async, ECS, culling, serialization, dedup)
 ```
 
-**Next up:** Step 10 (`DrawBatch` + `submit_draw_batch`) — the batcher contract that `nova-2d`/`nova-3d` will plug into.
+**Next up:** Step 11 (`nova-2d` crate) — sprite batching, `Camera2D`, `Render2D`, textured sprites on screen.
