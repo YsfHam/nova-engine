@@ -2,7 +2,7 @@
 
 > **Companion to:** `docs/architecture.md` (the target architecture).
 > **Purpose:** Track progress against the target architecture, identify remaining work, and lay out a step-by-step migration path.
-> **Last updated:** 2026-08-25
+> **Last updated:** 2026-08-28
 
 ---
 
@@ -256,7 +256,7 @@ frame.present(&queue)           → surface present
 
 **Divergence from original spec:**
 - `Material::ensure_bound` (dirty-flag-based) replaced by immutable materials + batch uniform pool build + permanent bind group cache. No `dirty` flag needed.
-- `RenderPass::draw_material` convenience method deferred to Step 9 (thin wrapper, needs a real material to test).
+- `RenderTarget::draw_material` convenience method deferred to Step 9 (delivered — begins pass, compiles pipeline, builds bind group, records draw in one split-borrowing call).
 
 **Deliverable:** Pipeline compilation deduplicated by template, per-material bind groups cached, scene globals in a separate arena, materials immutable + validated at load, `RenderTarget` enables view-agnostic rendering with direct cache access.
 
@@ -278,6 +278,7 @@ frame.present(&queue)           → surface present
 | Step 6 — Metadata-driven asset system | ✅ Done | `Shader` + `Sampler` + `Texture` assets + loaders, metadata-driven load API |
 | Step 7 — `MaterialTemplate` + `Material` | ✅ Done | Material recipe/instance model, engine-native enums, `LoadContext` borrow refinement, shader entry points |
 | Step 8 — `PipelineCache` + `BindGroupAllocator` + `RenderTarget` | ✅ Done | Pipeline caching by template, per-material bind group cache, `UniformArena` (group 0), `MaterialUniformPool`, `RenderTarget` refactor, immutable materials with load-time validation |
+| Step 9 — First render test (colored quad) | ✅ Done | **Colored quad on screen** — end-to-end pipeline proven; wgpu leaks wrapped; `draw_material` convenience; uniform offset alignment; per-uniform pool allocations; optional fragment shader |
 
 **Critical issues resolved:** C1 (no `on_render`), C2 (no `RenderContext`), C3 (no `Frame`/`RenderPass`), C4 (surface loss), C5 (present mode), H1 (no loaders), H2 (loaders use `GraphicsContext`), H3 (`ApplicationContext` leaks GPU), H4 (handler reaches into `GraphicsContext`), H5 (loader registration hook), L1 (`Handle` non-generational), L2 (`AssetStorage` panics), L3 (`AssetError` no context), L6 (missing deps).
 
@@ -287,22 +288,35 @@ frame.present(&queue)           → surface present
 
 Each step is self-contained and leaves the codebase in a working state.
 
-### Step 9 — Default resources + first render test (colored quad)
+### ✅ Step 9 — First render test (colored quad)
 
 **Goal:** A colored quad on screen through the full public API. **This is the major end-to-end milestone.**
 
-**Why now:** Proves the entire pipeline works: assets → materials → pipelines → frame → render pass → draw → submit → present.
+**Why now:** Proves the entire pipeline works: assets → materials → pipelines → `RenderTarget` → render pass → draw → submit → present.
 
-**Tasks:**
-1. Write `nova-core/src/graphics/defaults/shader_2d_flat.wgsl` (vertex: position + color + ortho projection uniform; fragment: output color). Embedded via `include_str!`.
-2. Register default shaders via `ShaderMetadata::from_inline(...)` + `AssetsManager::load::<Shader>` (the `ShaderSource::Inline` variant already supports this).
-3. Create a default `MaterialTemplate` (2D flat) + default white 1×1 `Texture` via `TextureMetadata::from_raw(...)` (the `TextureSource::Raw` variant already supports this).
-4. Use `RenderTarget`'s `upload_uniform` for the camera projection uniform (the `UniformArena` is already on `RenderTarget`).
-5. In `nova-test`, create a `Material` from the default template, set `u_color`, define quad vertices, and render in `on_render` using `RenderTarget::begin_render_pass` + `set_pipeline` + `set_bind_group` + `draw` (or a `draw_material` convenience method added here).
+**Scope decision:** The original plan included engine-level default resources (`defaults/shader_2d_flat.wgsl`, a default white 1×1 texture, a default `MaterialTemplate` baked into `nova-core`). This was **deferred** — the end-to-end pipeline is proven with a test-specific shader in `nova-test/assets/shader.wgsl` instead. Engine-level defaults will be added when `nova-2d` needs them (Step 11).
+
+**What was done:**
+1. **`math.rs`** — re-exports `glam` types (`Mat4`, `Vec4`, etc.) so engine users never depend on `glam` directly.
+2. **`mem.rs`** — re-exports `bytemuck` (`Pod`, `Zeroable`, `cast_slice`, `bytes_of`).
+3. **wgpu leak wrapping** — replaced all raw `wgpu` types in `nova-core`'s public API with engine-native enums + `From`/`TryInto` impls:
+   - `buffer.rs`: `VertexFormat` enum; `VertexBufferLayout` now takes `&[VertexFormat]`; `TryInto<wgpu::VertexBufferLayout>` returns `Err(())` when empty (omits the buffer from the pipeline).
+   - `texture.rs`: `TextureDimension`, `TextureFormat`, `TextureUsages` (bitflags), `TextureViewDimension`, `SamplerBindingType`.
+   - `render_pass.rs`: `set_pipeline` takes `&Pipeline` (not `&wgpu::RenderPipeline`); `IndexFormat` enum.
+4. **`RenderTarget::draw_material`** — a convenience that begins a render pass, compiles (or fetches) the pipeline, builds (or fetches) the material bind group, and records the draw — all in one call. It split-borrows `RenderTarget`'s disjoint fields (`render_ctx`, `encoder`, `view`) so the pipeline ref, bind group ref, and render pass coexist without cloning `wgpu` handles.
+5. **Uniform buffer offset alignment** — `UniformArena` and `MaterialUniformPool` now align each entry/binding's offset to `device.limits().min_uniform_buffer_offset_alignment` (via Rust's built-in `u64::next_multiple_of`). Fixes the "Buffer offset 64 does not respect … limit 256" validation error.
+6. **Per-uniform allocations** — `MaterialUniformPool` allocations are keyed by `(Handle<Material>, binding_slot)`, not per-material. The pool owns all offset math and exposes `binding_resource(handle, slot) -> wgpu::BindingResource` so `bind.rs` never computes offsets.
+7. **Optional fragment shader** — `MaterialTemplateMetadata.fragment_shader` changed from `Handle<Shader>` to `Option<Handle<Shader>>`, enabling vertex-only pipelines. `ResolvedMaterialTemplate.fragment_shader` is now `Option<FragmentShader<'a>>`. `pipeline.rs` handles `None` fragment state.
+8. **Bug fix: `FragmentShader::try_from`** — was matching the vertex entry point and rejecting the fragment variant (copy-paste from `VertexShader`). Fixed to match `Fragment`/`Both.fs_entry_point`.
+9. **`nova-test` renders a colored quad** — shader generates 6 vertices from `vertex_index` (no vertex buffer), color comes from a material uniform (group 1, binding 0). `on_init` loads shader → `MaterialTemplate` → `Material`; `on_render` uploads scene uniforms, builds the uniform pool, resolves the material, and calls `draw_material`.
 
 **Deliverable:** A colored quad on screen, rendered entirely through the public API. Proves the architecture end-to-end.
 
-**Dependencies:** Steps 6–8. `UniformArena` already on `RenderTarget` from
+**Dependencies:** Steps 6–8.
+
+**Files added:** `math.rs`, `mem.rs`
+**Files modified:** `graphics/buffer.rs`, `graphics/texture.rs`, `graphics/render_pass.rs`, `graphics/render_target.rs`, `graphics/uniform.rs`, `graphics/pipeline.rs`, `graphics/bind.rs`, `graphics/material.rs`, `graphics/shader.rs`, `assets/resolve.rs`, `Cargo.toml` (added `bitflags`)
+**Files modified (nova-test):** `src/main.rs`, `assets/shader.wgsl`
 
 ---
 
@@ -398,9 +412,9 @@ Each step is self-contained and leaves the codebase in a working state.
 | H3 — `ApplicationContext` leaks GPU | 🟡 High | ✅ Resolved | Step 3 | Holds `Rc<RefCell<RenderContext>>` |
 | H4 — `handler.rs` reaches into `GraphicsContext` | 🟡 High | ✅ Resolved | Step 3 | `render()` deleted; goes through `Frame` |
 | H5 — No loader registration hook for 2d/3d | 🟡 High | ✅ Resolved | Step 6 | Loaders registered in `app.rs` `init_assets_manager` |
-| L7 — `RenderPass::new` is dead code | 🟢 Low | ⏳ Anytime | — | `RenderPass::new` duplicates `RenderTarget::begin_render_pass` (user refactored). Remove `RenderPass::new` and the unused `RenderTarget` import in `render_pass.rs`. |
+| L7 — `RenderPass::new` is dead code | 🟢 Low | ✅ Resolved | Step 9 | `RenderPass::new` removed; render pass is begun via `RenderTarget::begin_render_pass` / `draw_material`. |
 | L8 — `ResolvedTextureBinding` unused | 🟢 Low | ⏳ Anytime | — | `bind.rs` defines `ResolvedTextureBinding` but `get_or_create` uses `ResolvedMaterial` directly. Remove the dead struct. |
-| L9 — `nova-test` unused imports | 🟢 Low | ⏳ Anytime | — | `Sampler`, `Shader`, `Texture` + their `*Metadata` types imported but unused in `nova-test/src/main.rs`. Clean up when Step 9 adds real usage. |
+| L9 — `nova-test` unused imports | 🟢 Low | ✅ Resolved | Step 9 | `nova-test` now uses `Shader`, `MaterialTemplate`, `Material`, `UniformBinding`, `UniformValue`, `Vec4`, etc. — all imports are used. |
 | L1 — `Handle` non-generational design | 🟢 Low | ✅ Resolved | Step 5 | Refactored to `(index: u32, generation: u32)` |
 | L2 — `AssetStorage` panics on bad index | 🟢 Low | ✅ Resolved | Step 0 | `get_mut`/`remove` use `?` |
 | L3 — `AssetError` no context | 🟢 Low | ✅ Resolved | Step 6 | Payloads + `Display` + `std::error::Error` |
@@ -422,11 +436,11 @@ Each step is self-contained and leaves the codebase in a working state.
 ✅ Step 7  — MaterialTemplate + Material + asset system refinements
 
 ✅ Step 8  — PipelineCache + BindGroupAllocator + RenderTarget refactor
-⬜ Step 9  — Default resources + colored quad                 ← END-TO-END MILESTONE
+✅ Step 9  — First render test (colored quad)                  ← END-TO-END MILESTONE
 ⬜ Step 10 — DrawBatch + submit_draw_batch (batcher contract)
 ⬜ Step 11 — nova-2d crate (sprite batching, Camera2D)
 ⬜ Step 12 — nova-3d crate (meshes, Camera3D, lights, depth pool)
 ⬜ Step 13+— Polish (hot-reload, umbrella crate, async, ECS, culling, serialization, dedup)
 ```
 
-**Next up:** Step 9 (Default resources + colored quad) — the end-to-end milestone. Proves assets → materials → pipelines → `RenderTarget` → render pass → draw → submit → present.
+**Next up:** Step 10 (`DrawBatch` + `submit_draw_batch`) — the batcher contract that `nova-2d`/`nova-3d` will plug into.
