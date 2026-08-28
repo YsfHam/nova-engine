@@ -1,17 +1,7 @@
 use nova_core::{
-    EngineResult,
-    app::{ApplicationBuilder, ApplicationContext, ApplicationProxy},
-    assets::resolve::ResolvedMaterial,
-    graphics::{
-        buffer::VertexBufferLayout,
-        color::Color,
-        material::{Material, MaterialMetadata, MaterialTemplate, MaterialTemplateMetadata},
-        render_pass::RenderPassDescriptor,
-        render_target::RenderTarget,
-        shader::{Shader, ShaderEntryPoint, ShaderMetadata},
-        uniform::{MaterialUniformEntry, UniformBinding, UniformType, UniformValue},
-    },
-    math::Vec4,
+    EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, assets::resolve::ResolvedMaterial, graphics::{
+        buffer::VertexBufferLayout, color::Color, environment::{EnvironmentDescriptor, EnvironmentUniform}, material::{Material, MaterialMetadata, MaterialTemplate, MaterialTemplateMetadata}, render_pass::RenderPassDescriptor, render_target::RenderTarget, shader::{Shader, ShaderEntryPoint, ShaderMetadata, ShaderStage}, uniform::{MaterialUniformEntry, UniformBinding, UniformType, UniformValue},
+    }, math::Vec4,
 };
 
 pub struct AppProxy {
@@ -31,21 +21,27 @@ impl ApplicationProxy for AppProxy {
     fn on_render(&mut self, ctx: &ApplicationContext, target: &mut RenderTarget<'_>) {
         let material_handle = self.material.expect("material loaded in on_init");
 
-        // Group 0 (scene): upload a trivial camera (identity) and time = 0.
-        // The shader declares these but doesn't use them for the 2D quad; the
-        // bind group layout still requires the entries to be bound.
-        target.upload_uniform(
-            0,
-            UniformValue::Mat4(nova_core::math::Mat4::IDENTITY),
+        let mut commander = target.commander(
+            EnvironmentDescriptor::new()
+            .add_uniform(EnvironmentUniform {
+                binding_slot: 0,
+                visibilty: ShaderStage::Vertex,
+                uniform: UniformValue::Mat4(nova_core::math::Mat4::IDENTITY),
+            })
+            .add_uniform(EnvironmentUniform {
+                binding_slot: 1,
+                visibilty: ShaderStage::Both,
+                uniform: UniformValue::F32(0.0),
+            })
         );
-        target.upload_uniform(1, UniformValue::F32(0.0));
-        let scene_bind_group = target
+
+        let scene_bind_group = commander
             .build_scene_bind_group()
             .expect("scene uniforms uploaded");
 
         // Build the material uniform pool once (first frame). Materials are
         // immutable, so the pool is stable afterwards.
-        if !target.is_uniform_pool_built() {
+        if !commander.is_uniform_pool_built() {
             let material = ctx
                 .assets_manager
                 .get_asset(material_handle)
@@ -54,7 +50,7 @@ impl ApplicationProxy for AppProxy {
                 .assets_manager
                 .get_asset(material.template())
                 .expect("material template asset");
-            target.build_uniform_pool([MaterialUniformEntry {
+            commander.build_uniform_pool([MaterialUniformEntry {
                 handle: material_handle,
                 material,
                 template,
@@ -70,7 +66,7 @@ impl ApplicationProxy for AppProxy {
         // draw — all in one call. `draw_material` split-borrows the encoder
         // and the RenderContext caches (disjoint fields) so no wgpu handles
         // are cloned.
-        target.draw_material(
+        commander.draw_material(
             RenderPassDescriptor::default().with_color_clear(Color::BLACK),
             &scene_bind_group,
             resolved_material,

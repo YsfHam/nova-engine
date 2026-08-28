@@ -1,10 +1,6 @@
 use crate::{
-    assets::resolve::ResolvedMaterialTemplate,
-    graphics::{
-        pipeline::{Pipeline, PipelineDescriptor},
-        render::RenderContext,
-        render_pass::{RenderPass, RenderPassDescriptor},
-        uniform::{MaterialUniformEntry, UniformArena, UniformValue},
+    assets::resolve::ResolvedMaterialTemplate, graphics::{
+        environment::EnvironmentDescriptor, pipeline::{Pipeline, PipelineDescriptor}, render::RenderContext, render_pass::{RenderPass, RenderPassDescriptor}, uniform::{MaterialUniformEntry, UniformArena, UniformValue},
     },
 };
 
@@ -27,6 +23,7 @@ pub struct RenderTarget<'a> {
     pub(crate) view: &'a wgpu::TextureView,
     pub(crate) encoder: wgpu::CommandEncoder,
     uniform_arena: UniformArena,
+    scene_bind_group_layout: Option<wgpu::BindGroupLayout>,
 }
 
 impl<'a> RenderTarget<'a> {
@@ -45,7 +42,46 @@ impl<'a> RenderTarget<'a> {
             view,
             encoder,
             uniform_arena: UniformArena::new(),
+            scene_bind_group_layout: None,
         }
+    }
+
+
+    pub fn commander(&mut self, environment: EnvironmentDescriptor) -> RenderTargetCommander<'_> {
+        self.set_environment(environment);
+
+        RenderTargetCommander {
+            render_ctx: self.render_ctx,
+            scene_bind_group_layout: self.scene_bind_group_layout.as_ref().unwrap(),
+            uniform_arena: &mut self.uniform_arena,
+            encoder: &mut self.encoder,
+            view: self.view,
+        }
+    }
+
+    fn set_environment(&mut self, environment: EnvironmentDescriptor) {
+        let mut entries = vec![];
+        for uniform in environment.uniforms() {
+            let entry = wgpu::BindGroupLayoutEntry {
+                binding: uniform.binding_slot,
+                visibility: uniform.visibilty.into(),
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            };
+
+            self.upload_uniform(uniform.binding_slot, uniform.uniform);
+
+            entries.push(entry);
+        }
+
+        self.scene_bind_group_layout = Some(self.render_ctx.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Scene bind group layout"),
+            entries: &entries
+        }));
     }
 
     /// Finishes the command encoder and submits it to the GPU queue.
@@ -61,19 +97,33 @@ impl<'a> RenderTarget<'a> {
     // ─── Uniform arena (group 0: environment) ───────────────────────────
 
     /// Uploads a scene-global uniform value at `binding_slot` (group 0).
-    pub fn upload_uniform(&mut self, binding_slot: u32, value: UniformValue) {
+    fn upload_uniform(&mut self, binding_slot: u32, value: UniformValue) {
         self.uniform_arena.upload(binding_slot, value);
     }
 
+}
+
+
+pub struct RenderTargetCommander<'a> {
+    render_ctx: &'a mut RenderContext,
+    scene_bind_group_layout: &'a wgpu::BindGroupLayout,
+    uniform_arena: &'a mut UniformArena,
+    encoder: &'a mut wgpu::CommandEncoder,
+    view: &'a wgpu::TextureView,
+}
+
+impl<'a> RenderTargetCommander<'a> {
     /// Builds the scene bind group (group 0) from all scene globals uploaded
     /// so far. Call once after uploading all scene globals, then bind the
     /// returned group before drawing. Returns `None` if nothing was uploaded.
     pub fn build_scene_bind_group(&mut self) -> Option<wgpu::BindGroup> {
+        let scene_bind_group_layout = self.scene_bind_group_layout;
         self.uniform_arena.build_bind_group(
             self.render_ctx.device(),
-            self.render_ctx.scene_bind_group_layout(),
+            scene_bind_group_layout
         )
     }
+
 
     // ─── Pipeline cache (group 1 layout) ────────────────────────────────
 
@@ -86,7 +136,7 @@ impl<'a> RenderTarget<'a> {
     ) -> &Pipeline {
         let desc = PipelineDescriptor {
             material_template: template,
-            scene_bind_group_layout: &self.render_ctx.scene_bind_group_layout,
+            scene_bind_group_layout: self.scene_bind_group_layout,
             target_format: self.render_ctx.surface_format(),
         };
         self.render_ctx
@@ -167,7 +217,7 @@ impl<'a> RenderTarget<'a> {
         //   - view (the target texture view)
         // These never alias, so their references coexist in this scope.
         let device = &self.render_ctx.gfx.device;
-        let scene_layout = &self.render_ctx.scene_bind_group_layout;
+        let scene_layout = &self.scene_bind_group_layout;
         let surface_format = self.render_ctx.surface_format();
         let pipeline_cache = &mut self.render_ctx.pipeline_cache;
         let bind_group_allocator = &mut self.render_ctx.bind_group_allocator;
@@ -274,5 +324,4 @@ impl<'a> RenderTarget<'a> {
 
         RenderPass { inner }
     }
-
 }

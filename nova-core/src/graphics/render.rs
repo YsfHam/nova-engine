@@ -3,59 +3,17 @@ use crate::{EngineResult, graphics::{bind::BindGroupAllocator, context::Graphics
 
 pub struct RenderContext {
     pub(crate) gfx: GraphicsContext,
-    pub(crate) scene_bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) pipeline_cache: PipelineCache,
     pub(crate) bind_group_allocator: BindGroupAllocator,
 }
 
 impl RenderContext {
     pub fn new(gfx: GraphicsContext) -> Self {
-        let scene_bind_group_layout = Self::create_scene_bind_group_layout(&gfx.device);
         Self {
-            scene_bind_group_layout,
             pipeline_cache: PipelineCache::new(),
             bind_group_allocator: BindGroupAllocator::new(),
             gfx,
         }
-    }
-
-    /// The singleton bind group layout for group 0 (environment uniforms).
-    ///
-    /// Every pipeline includes this as its first bind group layout. The
-    /// `UniformArena` builds one bind group per frame from this layout.
-    /// Shaders must conform to this contract: binding 0 = camera (Mat4),
-    /// binding 1 = time (F32). 3D extends this (lights, fog) by extending
-    /// the layout — still one layout, one bind group per frame.
-    fn create_scene_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Scene bind group layout (group 0)"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        })
-    }
-
-    pub fn scene_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
-        &self.scene_bind_group_layout
     }
 
     pub fn device(&self) -> &wgpu::Device {
