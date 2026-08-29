@@ -8,13 +8,20 @@
 	},
 	{
 		"path": "nova-2d"
+	},
+	{
+		"path": "docs"
+	},
+	{
+		"path": "nova"
 	}
 ],
 
 "settings": {
 	"chat.tools.terminal.autoApprove": {
 		"cargo check": true,
-		"cargo build": true
+		"cargo build": true,
+		"cargo clippy": true
 	}
 }
 }
