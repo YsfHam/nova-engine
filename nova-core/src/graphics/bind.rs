@@ -28,13 +28,6 @@ use crate::{
 //     pool's buffer (at the material's offset) + the texture views/samplers.
 // ──────────────────────────────────────────────────────────────────────────
 
-/// A resolved texture ready for bind group entry creation: a texture view +
-/// its sampler (both already resolved from handles by the caller).
-pub struct ResolvedTextureBinding<'a> {
-    pub view: &'a wgpu::TextureView,
-    pub sampler: &'a wgpu::Sampler,
-}
-
 pub struct BindGroupAllocator {
     uniform_pool: MaterialUniformPool,
     bind_groups: HashMap<Handle<Material>, wgpu::BindGroup>,
@@ -67,22 +60,7 @@ impl BindGroupAllocator {
         self.bind_groups.clear();
     }
 
-    /// Returns the cached bind group for `material_handle`, or builds + caches
-    /// it from the uniform pool buffer + the resolved textures.
-    ///
-    /// - The template's uniform layout is iterated; for each binding the pool
-    ///   is asked for a `BindingResource` by `(material handle, binding slot)`.
-    ///   The pool owns per-uniform allocations and offset alignment — the
-    ///   allocator does no offset math.
-    /// - `texture_bindings`: the template's texture layout (binding slots).
-    /// - `resolved_textures`: a map from texture binding slot to the resolved
-    ///   `ResolvedTextureBinding` (view + sampler). The caller resolves these
-    ///   from `Handle<Texture>` / `Handle<Sampler>` via `AssetsManager`.
-    /// - `material_bind_group_layout`: from the pipeline (group 1 layout).
-    ///
-    /// # Panics
-    /// Panics if the uniform pool has not been built or if the material was
-    /// not included in the last `build_uniform_pool` call.
+    
     pub fn get_or_create(
         &mut self,
         device: &wgpu::Device,

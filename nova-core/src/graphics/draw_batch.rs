@@ -63,9 +63,10 @@ impl DrawBatch {
     }
 
     /// Builder: add instance data (enables instanced drawing).
-    pub fn with_instances(mut self, instances: Vec<u8>, instance_stride: NonZeroU32) {
+    pub fn with_instances(mut self, instances: Vec<u8>, instance_stride: NonZeroU32) -> Self {
         self.instances = Some(instances);
         self.instance_stride = instance_stride.get();
+        self
     }
 
     /// The number of indices in this batch (each u16 index references one

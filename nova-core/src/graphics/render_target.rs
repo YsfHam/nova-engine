@@ -251,7 +251,6 @@ impl<'a> RenderTargetCommander<'a> {
         // Draw each batch in order — no sorting, no grouping.
         for batch in batches {
             //self.draw_batch(&mut pass, &batch, scene_bind_group, assets);
-
             let (
                 vertex_buffer,
                 index_buffer,
@@ -268,7 +267,7 @@ impl<'a> RenderTargetCommander<'a> {
             };
 
             Self::set_pipeline(&mut pass, device, pipeline_cache, resolved_material, scene_bind_group_layout, surface_format, bind_group_allocator);
-            Self::draw_call(&mut pass, &vertex_buffer, &index_buffer, batch.index_count(), instance_buffer.as_ref(), 1);
+            Self::draw_call(&mut pass, &vertex_buffer, &index_buffer, batch.index_count(), instance_buffer.as_ref(), batch.instance_count());
         }
         // pass dropped here — ends the render pass.
     }

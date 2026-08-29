@@ -10,7 +10,7 @@ pub use builder::ApplicationBuilder;
 use crate::{EngineResult, assets::AssetsManager, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, material::{MaterialLoader, MaterialTemplateLoader}, render::RenderContextRef, sampler::SamplerLoader, shader::ShaderLoader, texture::TextureLoader}, time::Clock, window::WindowApi};
 
 pub struct ApplicationContext {
-    window_api: WindowApi,
+    pub window_api: WindowApi,
     pub render_ctx: RenderContextRef,
     pub assets_manager: AssetsManager,
 }
