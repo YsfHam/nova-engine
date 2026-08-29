@@ -8,4 +8,4 @@
 //! use nova_core::math::{Mat4, Vec4};
 //! ```
 
-pub use glam::{Mat3, Mat4, Quat, Vec2, Vec3, Vec3A, Vec4};
+pub use glam::*;

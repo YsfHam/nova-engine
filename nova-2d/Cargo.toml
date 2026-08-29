@@ -1,0 +1,8 @@
+[package]
+name = "nova-2d"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+nova-core = { path = "../nova-core"}
+bytemuck = { version = " 1.25.2", features = ["derive"] }

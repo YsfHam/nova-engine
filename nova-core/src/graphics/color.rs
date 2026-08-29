@@ -1,3 +1,4 @@
+#[derive(Copy, Clone)]
 pub struct Color {
     pub r: f64,
     pub g: f64,
@@ -25,6 +26,12 @@ impl Into<wgpu::Color> for Color {
             b: self.b,
             a: self.a,
         }
+    }
+}
+
+impl Into<[f32; 4]> for Color {
+    fn into(self) -> [f32; 4] {
+        [self.r as f32, self.g as f32, self.b as f32, self.a as f32]
     }
 }
 

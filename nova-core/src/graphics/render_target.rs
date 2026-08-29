@@ -214,7 +214,7 @@ impl<'a> RenderTargetCommander<'a> {
 
     pub fn submit_batches<I>(
         mut self,
-        pass_descriptor: RenderPassDescriptor<'_>,
+        pass_descriptor: RenderPassDescriptor,
         batches: I,
         assets: &crate::assets::AssetsManager,
     )

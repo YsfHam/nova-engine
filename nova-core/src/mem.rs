@@ -14,5 +14,4 @@
 //! use nova_core::mem::{Pod, Zeroable, cast_slice};
 //! ```
 
-
-pub use bytemuck::{bytes_of, bytes_of_mut, cast_slice, cast_mut, cast_ref, Pod, Zeroable};
+pub use bytemuck;

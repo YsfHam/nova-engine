@@ -1,9 +1,14 @@
 {
 "folders": [
-
-	{"path": "nova-core"},
-	{"path": "nova-test"}
-
+	{
+		"path": "nova-core"
+	},
+	{
+		"path": "nova-test"
+	},
+	{
+		"path": "nova-2d"
+	}
 ],
 
 "settings": {

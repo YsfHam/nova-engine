@@ -6,13 +6,14 @@ use crate::graphics::{color::Color, pipeline::Pipeline};
 ///
 /// `color_clear`: `Some(color)` clears the target to `color`; `None` loads existing content.
 /// `depth_clear`: `Some(value)` clears depth to `value` (typically `1.0`); `None` = no depth attachment.
-pub struct RenderPassDescriptor<'a> {
-    pub label: Option<&'a str>,
+#[derive(Clone)]
+pub struct RenderPassDescriptor {
+    pub label: Option<String>,
     pub color_clear: Option<Color>,
     pub depth_clear: Option<f32>,
 }
 
-impl<'a> RenderPassDescriptor<'a> {
+impl RenderPassDescriptor {
     /// Default screen-clearing pass: clears color to black, no depth.
     pub fn new() -> Self {
         Self {
@@ -23,8 +24,8 @@ impl<'a> RenderPassDescriptor<'a> {
     }
 
     /// Set the debug label for this pass (shows up in GPU debuggers).
-    pub fn with_label(mut self, label: &'a str) -> Self {
-        self.label = Some(label);
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
         self
     }
 
@@ -41,7 +42,7 @@ impl<'a> RenderPassDescriptor<'a> {
     }
 }
 
-impl<'a> Default for RenderPassDescriptor<'a> {
+impl Default for RenderPassDescriptor {
     fn default() -> Self {
         Self::new()
     }
@@ -55,7 +56,7 @@ pub struct RenderPass<'frame> {
 
 impl<'frame> RenderPass<'frame> {
 
-    pub fn new(encoder: &'frame mut wgpu::CommandEncoder, view: &wgpu::TextureView, desc: RenderPassDescriptor<'frame>) -> Self {
+    pub fn new(encoder: &'frame mut wgpu::CommandEncoder, view: &wgpu::TextureView, desc: RenderPassDescriptor) -> Self {
 
         let color_attachment = wgpu::RenderPassColorAttachment {
             view,
@@ -87,7 +88,7 @@ impl<'frame> RenderPass<'frame> {
         });
 
         let inner = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: desc.label,
+            label: desc.label.as_ref().map(|s| s.as_str()),
             color_attachments: &color_attachments,
             depth_stencil_attachment,
             occlusion_query_set: None,
