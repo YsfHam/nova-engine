@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["nova-core", "nova-test", "nova-2d", "nova"]
