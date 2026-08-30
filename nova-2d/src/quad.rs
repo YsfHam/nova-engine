@@ -2,6 +2,7 @@ use nova_core::{assets::handle::Handle, graphics::{color::Color, material::Mater
 
 use crate::utils::RectF32;
 
+#[derive(Clone, Copy)]
 pub struct Quad {
     pub position: Vec2,
     pub angle: f32,
