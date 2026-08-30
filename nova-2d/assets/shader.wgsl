@@ -7,7 +7,7 @@ struct CameraUniform {
 
 
 struct VertexInput {
-    @location(0) position: vec4<f32>,
+    @location(0) position: vec2<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) color: vec4<f32>,
 };
@@ -25,7 +25,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
     // The camera view-projection transforms world-space positions
     // (from the quad's model transform applied on the CPU) into clip space.
-    out.clip_position = camera.view_proj * in.position;
+    out.clip_position = camera.view_proj * vec4<f32>(in.position, 0.0, 1.0);
     out.uv = in.uv;
     out.color = in.color;
     return out;

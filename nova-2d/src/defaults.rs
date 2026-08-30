@@ -16,7 +16,7 @@ pub(crate) fn default_material_template(shader: Handle<Shader>) -> MaterialTempl
         vertex_shader: shader,
         fragment_shader: Some(shader),
         buffer_layout: VertexBufferLayout::new(&[
-            VertexFormat::Float32x4,
+            VertexFormat::Float32x2,
             VertexFormat::Float32x2,
             VertexFormat::Float32x4
         ], 

@@ -1,24 +1,60 @@
 use std::collections::{BTreeMap, HashMap};
 
-use nova_core::{assets::handle::Handle, graphics::{draw_batch::{DrawBatch, VertexBatch}, material::Material}, math::vec4};
+use nova_core::{assets::handle::Handle, graphics::{color::Color, draw_batch::{DrawBatch, VertexBatch}, material::Material}, math::{Vec3Swizzles, vec3}};
 
 use crate::{quad::Quad, vertex::Vertex2D};
 
+const VERTICES_POSITIONS: [(f32, f32); 4] = [
+    (-0.5, -0.5),
+    (-0.5,  0.5),
+    ( 0.5,  0.5),
+    ( 0.5, -0.5),
+];
+
 pub struct Batcher2D {
     layers: BTreeMap<u32, BatchLayer>,
+    quad_vertices: [Vertex2D; 4],
 }
 
 impl Batcher2D {
     pub fn new() -> Self {
+
+        let quad_vertices = [
+            Vertex2D {
+                position: VERTICES_POSITIONS[0].into(),
+                uv: [0.0, 0.0],
+                color: Color::WHITE.into(),
+            },
+
+            Vertex2D {
+                position: VERTICES_POSITIONS[1].into(),
+                uv: [0.0, 1.0],
+                color: Color::WHITE.into(),
+            },
+
+            Vertex2D {
+                position: VERTICES_POSITIONS[2].into(),
+                uv: [1.0, 1.0],
+                color: Color::WHITE.into(),
+            },
+
+            Vertex2D {
+                position: VERTICES_POSITIONS[3].into(),
+                uv: [1.0, 0.0],
+                color: Color::WHITE.into(),
+            }
+        ];
+
         Self {
             layers: BTreeMap::new(),
+            quad_vertices,
         }
     }
 
     pub fn add_quad(&mut self, quad: Quad) {
         self.layers.entry(quad.z_index)
         .or_insert_with(|| BatchLayer::new())
-        .add_quad(quad);
+        .add_quad(quad, &mut self.quad_vertices);
     }
 
     pub fn gen_batches(&self) -> impl Iterator<Item = DrawBatch> {
@@ -32,46 +68,47 @@ impl Batcher2D {
 }
 
 struct BatchLayer {
-    quads: HashMap<Handle<Material>, VertexBatch>,
+    index_map: HashMap<Handle<Material>, usize>,
+    quads: Vec<(Handle<Material>, VertexBatch)>,
 }
 
 impl BatchLayer {
     fn new() -> Self {
         Self {
-            quads: HashMap::new(),
+            index_map: HashMap::new(),
+            quads: Vec::new(),
         }
     }
 
-    fn add_quad(&mut self, quad: Quad) {
+    fn add_quad(&mut self, quad: Quad, quad_vertices: &mut [Vertex2D]) {
         let transform = quad.transform();
         let uv = quad.uv;
 
-        // Center-origin local coords: -0.5..0.5 on both axes.
-        // The local origin (0,0) is the quad's center, so rotation in the
-        // transform pivots around the center, not a corner.
-        //
-        // Vertex order [TL, BL, BR, TR] with indices [0,1,2, 0,2,3] produces
-        // CCW triangles in NDC after the Y-flipping ortho projection,
-        // matching the pipeline's `front_face: Ccw`.
-        let pos_uv = [
-            ((-0.5, -0.5), (uv.left, uv.top)),    // TL
-            ((-0.5,  0.5), (uv.left, uv.bottom)), // BL
-            (( 0.5,  0.5), (uv.right, uv.bottom)), // BR
-            (( 0.5, -0.5), (uv.right, uv.top))    // TR
+
+        let uvs = [
+            (uv.left, uv.top),    // TL
+            (uv.left, uv.bottom), // BL
+            (uv.right, uv.bottom), // BR
+            (uv.right, uv.top)    // TR
         ];
 
-        let vertices = pos_uv.iter()
-            .map(|((x, y), (uv_x, uv_y))| {
-                Vertex2D {
-                    position: transform.mul_vec4(vec4(*x, *y, 0.0, 1.0)).into(),
-                    uv: [*uv_x, *uv_y],
-                    color: quad.color.into(),
-                }
-            })
-            .collect::<Vec<_>>();
+        for (i, &(x, y)) in VERTICES_POSITIONS.iter().enumerate() {
+            let vertex = &mut quad_vertices[i];
+            vertex.position = transform.mul_vec3(vec3(x, y, 1.0)).xy().into();
+            vertex.uv = uvs[i].into();
+            vertex.color = quad.color.into();
+        }
 
-        let batch = self.quads.entry(quad.material)
-        .or_insert_with(|| VertexBatch::new(std::mem::size_of::<Vertex2D>() as u32));
-        batch.add_vertices(&vertices, &[0, 1, 2, 0, 2, 3]);
+
+        let batch_index = *self.index_map.entry(quad.material)
+        .or_insert_with(|| {
+            self.quads.push((
+                quad.material,
+                VertexBatch::new(std::mem::size_of::<Vertex2D>() as u32)
+            ));
+            self.quads.len() - 1
+        });
+        let (_, batch) = &mut self.quads[batch_index];
+        batch.add_vertices(&quad_vertices, &[0, 1, 2, 0, 2, 3]);
     }
 }

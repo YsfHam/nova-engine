@@ -1,4 +1,4 @@
-use nova_core::{assets::handle::Handle, graphics::{color::Color, material::Material}, math::{Mat4, Quat, Vec2, vec2}};
+use nova_core::{assets::handle::Handle, graphics::{color::Color, material::Material}, math::{Mat3, Vec2, vec2}};
 
 use crate::utils::RectF32;
 
@@ -61,14 +61,11 @@ impl Quad {
         self
     }
 
-    pub fn transform(&self) -> Mat4 {
-        // Center-origin: local coords span -0.5..0.5, so the local origin
-        // is the quad's center. Rotation pivots around the center, and
-        // translation is simply the center position — no offset needed.
-        Mat4::from_scale_rotation_translation(
-            self.scale.extend(1.0),
-            Quat::from_rotation_z(self.angle),
-            self.position.extend(0.0),
+    pub fn transform(&self) -> Mat3 {
+        Mat3::from_scale_angle_translation(
+            self.scale,
+            self.angle,
+            self.position
         )
     }
 }
