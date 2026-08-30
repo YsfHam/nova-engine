@@ -7,12 +7,13 @@ mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::AssetsManager, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, material::{MaterialLoader, MaterialTemplateLoader}, render::RenderContextRef, sampler::SamplerLoader, shader::ShaderLoader, texture::TextureLoader}, time::Clock, window::WindowApi};
+use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, material::{MaterialLoader, MaterialTemplateLoader}, render::RenderContextRef, sampler::SamplerLoader, shader::ShaderLoader, texture::TextureLoader}, plugin::Plugins, time::Clock, window::WindowApi};
 
 pub struct ApplicationContext {
     pub window_api: WindowApi,
     pub render_ctx: RenderContextRef,
     pub assets_manager: AssetsManager,
+    pub default_assets: DefaultAssets,
 }
 
 impl ApplicationContext {
@@ -35,6 +36,7 @@ pub struct Application<P: ApplicationProxy> {
     ctx: Option<ApplicationContext>,
     frame_clock: Clock,
     frame_time: Duration,
+    plugins: Plugins,
 
     engine_error: Option<EngineError>,
 }
@@ -60,6 +62,7 @@ impl<P: ApplicationProxy> Application<P> {
             ctx: None,
             frame_clock: Clock::new(),
             frame_time: Duration::from_millis(1000 / builder.frame_rate),
+            plugins: builder.plugins,
             engine_error: None,
         }
     }
@@ -78,12 +81,19 @@ impl<P: ApplicationProxy> Application<P> {
         let mut assets_manager = AssetsManager::new(render_ctx.clone());
         Self::init_assets_manager(&mut assets_manager);
 
-        window_api.window.set_visible(window_visible);
-        self.ctx = Some(ApplicationContext {
+        let default_assets = DefaultAssets::new();
+
+        let mut app_ctx = ApplicationContext {
             window_api,
             render_ctx,
             assets_manager,
-        });
+            default_assets,
+        };
+
+        self.plugins.init(&mut app_ctx)?;
+
+        app_ctx.window_api.window.set_visible(window_visible);
+        self.ctx = Some(app_ctx);
 
         self.proxy.on_init(self.ctx.as_mut().unwrap())?;
 

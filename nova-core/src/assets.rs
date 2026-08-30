@@ -5,6 +5,7 @@ pub mod handle;
 pub mod load;
 pub mod error;
 pub mod resolve;
+pub mod defaults;
 mod storage;
 
 /// An asset stored in the [`AssetsManager`].

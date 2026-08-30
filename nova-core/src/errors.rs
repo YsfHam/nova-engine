@@ -1,7 +1,7 @@
 use wgpu::{CreateSurfaceError, RequestAdapterError, RequestDeviceError};
 use winit::error::OsError;
 
-use crate::assets::error::AssetError;
+use crate::assets::{defaults::DuplicatedDefaultAssetError, error::AssetError};
 
 #[derive(Debug)]
 pub enum EngineError {
@@ -10,7 +10,8 @@ pub enum EngineError {
     DeviceRequestError(RequestDeviceError),
     OsError(OsError),
     AssetError(AssetError),
-    UserError(String)
+    UserError(String),
+    DuplicatedDefaultAssetError(DuplicatedDefaultAssetError),
 }
 
 impl From<CreateSurfaceError> for EngineError {
@@ -40,5 +41,11 @@ impl From<OsError> for EngineError {
 impl From<AssetError> for EngineError {
     fn from(value: AssetError) -> Self {
         Self::AssetError(value)
+    }
+}
+
+impl From<DuplicatedDefaultAssetError> for EngineError {
+    fn from(value: DuplicatedDefaultAssetError) -> Self {
+        Self::DuplicatedDefaultAssetError(value)
     }
 }

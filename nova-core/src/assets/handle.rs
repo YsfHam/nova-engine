@@ -1,11 +1,43 @@
-use std::{fmt::Debug, hash::Hash, marker::PhantomData};
+use std::{any::TypeId, fmt::Debug, hash::Hash, marker::PhantomData};
 
 use crate::assets::Asset;
+
+#[derive(Copy, Clone)]
+pub(crate) struct GenericHandle {
+    index: u32,
+    generation: u32,
+    type_id: TypeId,
+}
 
 pub struct Handle<A: Asset> {
     pub(in crate::assets) index: u32,
     pub(in crate::assets) generation: u32,
     _phantom: PhantomData<A>,
+}
+
+impl<A: Asset> From<Handle<A>> for GenericHandle {
+    fn from(value: Handle<A>) -> Self {
+        Self {
+            index: value.index,
+            generation: value.generation,
+            type_id: TypeId::of::<A>(),
+        }
+    }
+}
+
+impl<A: Asset> TryFrom<GenericHandle> for Handle<A> {
+    type Error = ();
+
+    fn try_from(value: GenericHandle) -> Result<Self, Self::Error> {
+        let type_id = TypeId::of::<A>();
+        if type_id != value.type_id {
+            Err(())
+        }
+        else {
+            Ok(Handle::new(value.index, value.generation))
+        }
+
+    }
 }
 
 impl<A: Asset> Handle<A> {

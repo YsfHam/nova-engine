@@ -1,6 +1,6 @@
 use winit::{event_loop::ControlFlow, window::{Window, WindowAttributes}};
 
-use crate::{app::{Application, ApplicationProxy}, graphics::config::GraphicsConfiguration};
+use crate::{app::{Application, ApplicationProxy}, graphics::config::GraphicsConfiguration, plugin::{Plugin, Plugins, PluginsGroup}};
 
 pub struct ApplicationBuilder<P: ApplicationProxy> {
     pub(crate) window_attributes: WindowAttributes,
@@ -8,6 +8,7 @@ pub struct ApplicationBuilder<P: ApplicationProxy> {
     pub(crate) control_flow: ControlFlow,
     pub(crate) proxy: P,
     pub(crate) frame_rate: u64,
+    pub(crate) plugins: Plugins,
 }
 
 impl<P: ApplicationProxy> ApplicationBuilder<P> {
@@ -18,6 +19,7 @@ impl<P: ApplicationProxy> ApplicationBuilder<P> {
             control_flow: ControlFlow::Poll,
             proxy,
             frame_rate: 60,
+            plugins: Plugins::new(),
         }
     }
 
@@ -38,6 +40,16 @@ impl<P: ApplicationProxy> ApplicationBuilder<P> {
 
     pub fn with_frame_rate(mut self, frame_rate: u64) -> Self {
         self.frame_rate = frame_rate;
+        self
+    }
+
+    pub fn with_plugin(mut self, plugin: impl Plugin) -> Self {
+        self.plugins.add_plugin(plugin);
+        self
+    }
+
+    pub fn with_plugins(mut self, plugins: impl PluginsGroup) -> Self {
+        plugins.add_plugins(&mut self.plugins);
         self
     }
 
