@@ -22,7 +22,6 @@ impl<'a> Render2D<'a> {
     }
 
     pub fn end_scene(self, pass_descriptor: RenderPassDescriptor, assets: &AssetsManager) {
-        let batches = self.batcher.gen_batches();
-        self.commander.submit_batches(pass_descriptor, batches, assets);
+        self.commander.submit_batches(pass_descriptor, self.batcher.into_iter(), assets);
     }
 }

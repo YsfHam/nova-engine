@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use nova_core::{assets::handle::Handle, graphics::{color::Color, draw_batch::{DrawBatch, VertexBatch}, material::Material}, math::{Vec3Swizzles, vec3}};
+use nova_core::{assets::handle::Handle, graphics::{color::Color, draw_batch::DrawBatch, material::Material}, math::{Vec3Swizzles, vec3}};
 
 use crate::{quad::Quad, vertex::Vertex2D};
 
@@ -57,26 +57,24 @@ impl Batcher2D {
         .add_quad(quad, &mut self.quad_vertices);
     }
 
-    pub fn gen_batches(&self) -> impl Iterator<Item = DrawBatch> {
-        self.layers.iter()
-        .flat_map(|(_, layer)| {
-            layer.quads.iter()
-            .map(|(material, vbatch)| 
-            DrawBatch::with_vertices(*material, vbatch.vertices(), vbatch.indices().to_vec()))
-        })
+    pub fn into_iter(self) -> impl Iterator<Item = DrawBatch> {
+        self.layers
+            .into_iter()
+            .flat_map(|(_, layer)| layer.batches)
+
     }
 }
 
 struct BatchLayer {
     index_map: HashMap<Handle<Material>, usize>,
-    quads: Vec<(Handle<Material>, VertexBatch)>,
+    batches: Vec<DrawBatch>,
 }
 
 impl BatchLayer {
     fn new() -> Self {
         Self {
             index_map: HashMap::new(),
-            quads: Vec::new(),
+            batches: Vec::new(),
         }
     }
 
@@ -102,13 +100,15 @@ impl BatchLayer {
 
         let batch_index = *self.index_map.entry(quad.material)
         .or_insert_with(|| {
-            self.quads.push((
-                quad.material,
-                VertexBatch::new(std::mem::size_of::<Vertex2D>() as u32)
-            ));
-            self.quads.len() - 1
+            self.batches.push(
+                DrawBatch::new(
+                    quad.material,
+                    std::mem::size_of::<Vertex2D>() as u32
+                )
+            );
+            self.batches.len() - 1
         });
-        let (_, batch) = &mut self.quads[batch_index];
+        let batch = &mut self.batches[batch_index];
         batch.add_vertices(&quad_vertices, &[0, 1, 2, 0, 2, 3]);
     }
 }

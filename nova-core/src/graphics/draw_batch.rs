@@ -1,4 +1,3 @@
-use std::num::NonZeroU32;
 
 use bytemuck::NoUninit;
 
@@ -32,65 +31,93 @@ use crate::{
 ///
 /// Indices are always `u16` (`Uint16`). This is sufficient for up to 65K
 /// vertices per batch — more than enough for 2D quads and most 3D meshes.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct DrawBatch {
     
     pub material: Handle<Material>,
 
-    pub vertices: Vec<u8>,
-    
-    pub indices: Vec<u16>,
+    vertex_batch: VertexBatch,
 
-    pub instances: Option<Vec<u8>>,
-
-    instance_stride: u32,
+    instance_batch: Option<InstanceBatch>,
 }
 
 impl DrawBatch {
 
-    pub fn with_vertices<V: NoUninit>(
-        material: Handle<Material>,
-        vertices: &[V],
-        indices: Vec<u16>,
-    ) -> Self {
+    pub fn new(material: Handle<Material>, vertex_stride: u32) -> Self {
         Self {
             material,
-            vertices: bytemuck::cast_slice(vertices).to_vec(),
-            indices,
-            instances: None,
-            instance_stride: 1,
+            vertex_batch: VertexBatch::new(vertex_stride),
+            instance_batch: None,
         }
     }
 
+    pub fn with_vertices<V: NoUninit>(
+        material: Handle<Material>,
+        vertices: &[V],
+        vertex_stride: u32,
+        indices: &[u16],
+    ) -> Self {
+
+        let mut slf = Self::new(material, vertex_stride);
+        slf.add_vertices(vertices, indices);
+
+        slf
+    }
+
     /// Builder: add instance data (enables instanced drawing).
-    pub fn with_instances(mut self, instances: Vec<u8>, instance_stride: NonZeroU32) -> Self {
-        self.instances = Some(instances);
-        self.instance_stride = instance_stride.get();
+    pub fn with_instances<I: NoUninit>(mut self, instances: &[I], instance_stride: u32) -> Self {
+        let mut instance_batch = InstanceBatch::new(instance_stride);
+        instance_batch.add_instances(instances);
+        self.instance_batch = Some(instance_batch);
         self
     }
 
-    /// The number of indices in this batch (each u16 index references one
-    /// vertex).
+    pub fn add_instances<I: NoUninit>(&mut self, instances: &[I]) {
+        if let Some(instance_batch) = self.instance_batch.as_mut() {
+            instance_batch.add_instances(instances);
+        }
+    }
+
+    pub fn add_vertices<V: NoUninit>(&mut self, vertices: &[V], indices: &[u16]) {
+        self.vertex_batch.add_vertices(vertices, indices);
+    }
+
     pub fn index_count(&self) -> u32 {
-        self.indices.len() as u32
+        self.vertex_batch.index_count()
+    }
+
+    pub fn vertices(&self) -> &[u8] {
+        &self.vertex_batch.vertices
+    }
+
+    pub fn indices(&self) -> &[u16] {
+        &self.vertex_batch.indices
+    }
+
+    pub fn instances(&self) -> Option<&[u8]> {
+        self
+            .instance_batch
+            .as_ref()
+            .map(|instance_batch| instance_batch.instances.as_slice())
     }
 
     pub fn instance_count(&self) -> u32 {
-        self.instances
+        self.instance_batch
         .as_ref()
-        .map(|instances| instances.len() as u32 / self.instance_stride)
+        .map(|instance_batch| instance_batch.len())
         .unwrap_or(1)
     }
 }
 
-pub struct VertexBatch {
+#[derive(Debug)]
+struct VertexBatch {
     vertices: Vec<u8>,
     vertex_stride: u32,
     indices: Vec<u16>,
 }
 
 impl VertexBatch {
-    pub fn new(vertex_stride: u32) -> Self {
+    fn new(vertex_stride: u32) -> Self {
         Self {
             vertices: vec![],
             vertex_stride,
@@ -98,7 +125,7 @@ impl VertexBatch {
         }
     }
 
-    pub fn add_vertices<V: NoUninit>(&mut self, vertices: &[V], indices: &[u16]) {
+    fn add_vertices<V: NoUninit>(&mut self, vertices: &[V], indices: &[u16]) {
         let offset = self.vertex_count();
         self.vertices.extend_from_slice(bytemuck::cast_slice(vertices));
         let offseted_indices =  
@@ -109,39 +136,40 @@ impl VertexBatch {
         self.indices.extend_from_slice(&offseted_indices);
     }
 
-    pub fn vertex_count(&self) -> u32 {
+    fn vertex_count(&self) -> u32 {
         self.vertices.len() as u32 / self.vertex_stride
     }
 
-    pub fn vertices(&self) -> &[u8] {
-        &self.vertices
-    }
-
-    pub fn indices(&self) -> &[u16] {
-        &self.indices
+    fn index_count(&self) -> u32 {
+        self.indices.len() as u32
     }
 }
 
 
-pub struct InstanceBatch {
+#[derive(Debug)]
+struct InstanceBatch {
     instances: Vec<u8>,
     instance_stride: u32,
 }
 
 impl InstanceBatch {
-    pub fn new(instance_stride: u32) -> Self {
+    fn new(instance_stride: u32) -> Self {
         Self {
             instance_stride,
             instances: vec![]
         }
     }
 
-    pub fn add_instances<I: NoUninit>(&mut self, instances: &[I]) {
+    fn add_instances<I: NoUninit>(&mut self, instances: &[I]) {
         let type_size = std::mem::size_of::<I>();
         if type_size != self.instance_stride as usize {
             panic!("Instance size mismatch epxected: {}, found {}", self.instance_stride, type_size);
         }
 
         self.instances.extend_from_slice(bytemuck::cast_slice(instances));
+    }
+
+    fn len(&self) -> u32 {
+        self.instances.len() as u32 / self.instance_stride
     }
 }

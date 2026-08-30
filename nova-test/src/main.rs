@@ -59,7 +59,7 @@ impl ApplicationProxy for AppProxy {
                 r: 1.0,
                 g: 0.0,
                 b: 0.0,
-                a: 0.5,
+                a: 1.0,
             })
             .with_angle(PI / 4.0)
         );

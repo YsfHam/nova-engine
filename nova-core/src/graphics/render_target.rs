@@ -329,17 +329,17 @@ impl<'a> RenderTargetCommander<'a> {
         let vertex_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("DrawBatch vertex buffer"),
-                contents: &batch.vertices,
+                contents: batch.vertices(),
                 usage: wgpu::BufferUsages::VERTEX,
             });
         let index_buffer =
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("DrawBatch index buffer"),
-                contents: bytemuck::cast_slice(&batch.indices),
+                contents: bytemuck::cast_slice(batch.indices()),
                 usage: wgpu::BufferUsages::INDEX,
             });
 
-        let instance_buffer = batch.instances.as_ref().map(|inst_data| {
+        let instance_buffer = batch.instances().map(|inst_data| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("DrawBatch instance buffer"),
                     contents: inst_data,
