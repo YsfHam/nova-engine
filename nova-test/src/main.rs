@@ -1,4 +1,6 @@
 
+use std::f32::consts::PI;
+
 use nova::{DefaultPlugins, core::{
     EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, graphics::{
         color::Color, environment::{EnvironmentDescriptor, EnvironmentUniform}, frame::Frame, render_pass::RenderPassDescriptor, shader::ShaderStage, uniform::UniformValue,
@@ -46,6 +48,20 @@ impl ApplicationProxy for AppProxy {
             .with_position(vec2(100.0, 90.0))
             .with_scale(vec2(100.0, 100.0))
             .with_color(Color::YELLOW)
+            .with_angle(PI / 4.0)
+        );
+
+        renderer.draw_quad(
+            Quad::new(material_handle)
+            .with_position(vec2(200.0, 90.0))
+            .with_scale(vec2(100.0, 100.0))
+            .with_color(Color {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.5,
+            })
+            .with_angle(PI / 4.0)
         );
 
         renderer.end_scene(

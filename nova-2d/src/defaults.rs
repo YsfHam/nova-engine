@@ -1,4 +1,4 @@
-use nova_core::{assets::{defaults::DefaultAssetsKey, handle::Handle}, graphics::{buffer::{VertexBufferLayout, VertexFormat}, material::{MaterialMetadata, MaterialTemplate, MaterialTemplateMetadata}, shader::{Shader, ShaderEntryPoint, ShaderMetadata}, texture::{SamplerBindingType, Texture, TextureBinding, TextureViewDimension}}};
+use nova_core::{assets::{defaults::DefaultAssetsKey, handle::Handle}, graphics::{buffer::{VertexBufferLayout, VertexFormat}, material::{BlendMode, MaterialMetadata, MaterialTemplate, MaterialTemplateMetadata}, shader::{Shader, ShaderEntryPoint, ShaderMetadata}, texture::{SamplerBindingType, Texture, TextureBinding, TextureViewDimension}}};
 
 pub(crate) fn default_shader() -> ShaderMetadata {
     ShaderMetadata::from_inline(
@@ -22,7 +22,7 @@ pub(crate) fn default_material_template(shader: Handle<Shader>) -> MaterialTempl
         ], 
             0
         ),
-        blend_state: Default::default(),
+        blend_state: BlendMode::Alpha,
         depth_stencil: None,
         topology: Default::default(),
         uniform_layout: vec![],

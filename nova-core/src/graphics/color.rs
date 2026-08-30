@@ -35,15 +35,15 @@ impl Into<[f32; 4]> for Color {
     }
 }
 
-pub struct RGBColor {
+pub struct RGBAColor {
     pub r: u8,
     pub g: u8,
     pub b: u8,
     pub a: u8,
 }
 
-impl From<RGBColor> for Color {
-    fn from(value: RGBColor) -> Self {
+impl From<RGBAColor> for Color {
+    fn from(value: RGBAColor) -> Self {
         Self {
             r: value.r as f64 / 255.0,
             g: value.g as f64 / 255.0,
