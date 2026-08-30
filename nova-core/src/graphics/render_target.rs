@@ -1,10 +1,9 @@
 use std::cell::RefMut;
 
-use wgpu::util::DeviceExt;
 
 use crate::{
     assets::resolve::ResolvedMaterial, graphics::{
-        bind::BindGroupAllocator, draw_batch::DrawBatch, environment::EnvironmentDescriptor, pipeline::{PipelineCache, PipelineDescriptor}, render::RenderContext, render_pass::{IndexFormat, RenderPass, RenderPassDescriptor}, texture::TextureFormat, uniform::{MaterialUniformEntry, UniformArena},
+        bind::BindGroupAllocator, buffer::{Offset, StagingBufferPool}, draw_batch::DrawBatch, environment::EnvironmentDescriptor, pipeline::{PipelineCache, PipelineDescriptor}, render::RenderContext, render_pass::{IndexFormat, RenderPass, RenderPassDescriptor}, texture::TextureFormat, uniform::{MaterialUniformEntry, UniformArena},
     },
 };
 
@@ -73,6 +72,8 @@ impl<'a> RenderTarget<'a> {
             uniform_arena: &mut self.uniform_arena,
             encoder: self.encoder.as_mut().expect("Encoder must be Some"),
             view: self.view,
+            staging_buffer: &mut render_ctx.staging_buffer_pool,
+            queue: &render_ctx.gfx.queue
         }
     }
 
@@ -208,6 +209,8 @@ pub struct RenderTargetCommander<'a> {
     uniform_arena: &'a mut UniformArena,
     encoder: &'a mut wgpu::CommandEncoder,
     view: &'a wgpu::TextureView,
+    staging_buffer: &'a mut StagingBufferPool,
+    queue: &'a wgpu::Queue,
 }
 
 impl<'a> RenderTargetCommander<'a> {
@@ -242,20 +245,28 @@ impl<'a> RenderTargetCommander<'a> {
             scene_bind_group_layout,
             encoder,
             view,
+            staging_buffer,
+            queue,
             ..
         } = self;
+
+        
+        let batches_with_offsets = Self::build_staging_buffer(
+            batches.into_iter(),
+            staging_buffer,
+            device, 
+            queue, 
+            encoder
+        ).collect::<Vec<_>>();
+
 
         let mut pass = RenderPass::new(encoder, view, pass_descriptor);
         pass.set_bind_group(0, &scene_bind_group, &[]);
 
+        let buffer = staging_buffer.swap_buffers();
+
         // Draw each batch in order — no sorting, no grouping.
-        for batch in batches {
-            //self.draw_batch(&mut pass, &batch, scene_bind_group, assets);
-            let (
-                vertex_buffer,
-                index_buffer,
-                instance_buffer
-            ) = Self::create_buffers(device, &batch);
+        for (batch, offsets) in batches_with_offsets {
 
             // Resolve the material → template → pipeline + bind group.
             let resolved_material = match crate::assets::resolve::ResolvedMaterial::new(
@@ -267,7 +278,7 @@ impl<'a> RenderTargetCommander<'a> {
             };
 
             Self::set_pipeline(&mut pass, device, pipeline_cache, resolved_material, scene_bind_group_layout, surface_format, bind_group_allocator);
-            Self::draw_call(&mut pass, &vertex_buffer, &index_buffer, batch.index_count(), instance_buffer.as_ref(), batch.instance_count());
+            Self::draw_call(&mut pass, buffer, &offsets, batch.index_count(), batch.instance_count());
         }
         // pass dropped here — ends the render pass.
     }
@@ -325,30 +336,30 @@ impl<'a> RenderTargetCommander<'a> {
         self.build_uniform_pool(materials);
     }
 
-    fn create_buffers(device: &wgpu::Device, batch: &DrawBatch) -> (wgpu::Buffer, wgpu::Buffer, Option<wgpu::Buffer>) {
-        let vertex_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("DrawBatch vertex buffer"),
-                contents: batch.vertices(),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-        let index_buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("DrawBatch index buffer"),
-                contents: bytemuck::cast_slice(batch.indices()),
-                usage: wgpu::BufferUsages::INDEX,
-            });
+    fn build_staging_buffer(
+        batches: impl Iterator<Item = DrawBatch>,
+        staging_buffer: &mut StagingBufferPool,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder
+    ) -> impl Iterator<Item = (DrawBatch, BatchStagingBufferOffsets)> {
+        batches.map(|batch| {
+            let vertices = batch.vertices();
+            let indices = batch.indices();
+            let instances = batch.instances();
 
-        let instance_buffer = batch.instances().map(|inst_data| {
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("DrawBatch instance buffer"),
-                    contents: inst_data,
-                    usage: wgpu::BufferUsages::VERTEX,
-                })
-            });
+            let vertex_offset = staging_buffer.upload(vertices, device, queue, encoder);
+            let index_offset = staging_buffer.upload(bytemuck::cast_slice(indices), device, queue, encoder);
+            let instance_offset = instances.map(|instances| staging_buffer.upload(instances, device, queue, encoder));
 
-        
-        (vertex_buffer, index_buffer, instance_buffer)
+            let offsets = BatchStagingBufferOffsets {
+                vertex_offset,
+                index_offset,
+                instance_offset,
+            };
+
+            (batch, offsets)
+        })
     }
 
     fn set_pipeline(
@@ -384,19 +395,32 @@ impl<'a> RenderTargetCommander<'a> {
 
     fn draw_call(
         pass: &mut RenderPass,
-        vertex_buffer: &wgpu::Buffer,
-        index_buffer: &wgpu::Buffer,
+        buffer: &wgpu::Buffer,
+        offsets: &BatchStagingBufferOffsets,
         index_count: u32,
-        instance_buffer: Option<&wgpu::Buffer>,
         instance_count: u32
     ) {
-        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            pass.set_index_buffer(index_buffer.slice(..), IndexFormat::Uint16);
 
-            if let Some(ref inst_buf) = instance_buffer {
-                pass.set_vertex_buffer(1, inst_buf.slice(..));
-            }
+        let BatchStagingBufferOffsets {
+            vertex_offset,
+            index_offset,
+            instance_offset,
+        } = offsets;
+
+
+        pass.set_vertex_buffer(0, buffer.slice(vertex_offset.offset..(vertex_offset.offset + vertex_offset.size)));
+        pass.set_index_buffer(buffer.slice(index_offset.offset..(index_offset.offset + index_offset.size)), IndexFormat::Uint16);
+
+        if let Some(instance_offset) = instance_offset {
+            pass.set_vertex_buffer(1, buffer.slice(instance_offset.offset..(instance_offset.offset + instance_offset.size)));
+        }
 
         pass.draw_indexed(0..index_count, 0, 0..instance_count);
     }
+}
+
+struct BatchStagingBufferOffsets {
+    vertex_offset: Offset,
+    index_offset: Offset,
+    instance_offset: Option<Offset>
 }

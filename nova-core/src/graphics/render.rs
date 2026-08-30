@@ -1,7 +1,7 @@
 
 use std::{cell::{Ref, RefCell, RefMut}, rc::Rc};
 
-use crate::{EngineResult, graphics::{bind::BindGroupAllocator, context::GraphicsContext, frame::Frame, pipeline::PipelineCache, render_target::TextureRenderTarget, texture::TextureFormat}};
+use crate::{EngineResult, graphics::{bind::BindGroupAllocator, buffer::StagingBufferPool, context::GraphicsContext, frame::Frame, pipeline::PipelineCache, render_target::TextureRenderTarget, texture::TextureFormat}};
 
 
 /// A clonable, interior-mutable handle to the [`RenderContext`].
@@ -75,7 +75,7 @@ pub struct RenderContext {
     pub(crate) gfx: GraphicsContext,
     pub(crate) pipeline_cache: PipelineCache,
     pub(crate) bind_group_allocator: BindGroupAllocator,
-
+    pub(crate) staging_buffer_pool: StagingBufferPool,
     command_buffers: Option<Vec<wgpu::CommandBuffer>>,
 }
 
@@ -84,6 +84,7 @@ impl RenderContext {
         Self {
             pipeline_cache: PipelineCache::new(),
             bind_group_allocator: BindGroupAllocator::new(),
+            staging_buffer_pool: StagingBufferPool::new(&gfx.device, 1024 * 1024),
             gfx,
             command_buffers: Some(Vec::new()),
         }
