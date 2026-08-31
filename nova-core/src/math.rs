@@ -9,3 +9,28 @@
 //! ```
 
 pub use glam::*;
+
+#[derive(Copy, Clone)]
+pub enum Angle {
+    Radians(f32),
+    Degrees(f32),
+}
+
+impl Angle {
+    pub const ZERO: Self = Self::Radians(0.0);
+}
+
+impl From<f32> for Angle {
+    fn from(value: f32) -> Self {
+        Self::Radians(value)
+    }
+}
+
+impl From<Angle> for f32 {
+    fn from(value: Angle) -> Self {
+        match value {
+            Angle::Radians(angle) => angle,
+            Angle::Degrees(angle) => angle.to_radians(),
+        }
+    }
+}

@@ -1,11 +1,11 @@
-use nova_core::{assets::handle::Handle, graphics::{color::Color, material::Material}, math::{Mat3, Vec2, vec2}};
+use nova_core::{assets::handle::Handle, graphics::{color::Color, material::Material}, math::{Angle, Mat3, Vec2, vec2}};
 
 use crate::utils::RectF32;
 
 #[derive(Clone, Copy)]
 pub struct Quad {
     pub position: Vec2,
-    pub angle: f32,
+    pub angle: Angle,
     pub scale: Vec2,
     pub material: Handle<Material>,
     pub color: Color,
@@ -27,7 +27,7 @@ impl Quad {
                 right: 1.0,
             },
             position: Vec2::ZERO,
-            angle: 0.0,
+            angle: Angle::ZERO,
             scale: vec2(1.0, 1.0),
         }
     }
@@ -42,8 +42,8 @@ impl Quad {
         self
     }
 
-    pub fn with_angle(mut self, angle: f32) -> Self {
-        self.angle = angle;
+    pub fn with_angle(mut self, angle: impl Into<Angle>) -> Self {
+        self.angle = angle.into();
         self
     }
 
@@ -65,7 +65,7 @@ impl Quad {
     pub fn transform(&self) -> Mat3 {
         Mat3::from_scale_angle_translation(
             self.scale,
-            self.angle,
+            self.angle.into(),
             self.position
         )
     }

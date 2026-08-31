@@ -251,7 +251,7 @@ impl AppProxy {
     fn update_cache(&mut self) {
         for (i, quad) in self.quad_cache.iter_mut().enumerate() {
             if QuadArchetype::from_index(i).rotates() {
-                quad.angle = self.total_time * 2.0 + i as f32 * 0.1;
+                quad.angle = (self.total_time * 2.0 + i as f32 * 0.1).into();
             }
         }
     }
