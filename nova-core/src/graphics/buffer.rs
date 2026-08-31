@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 
 #[derive(Clone, Debug)]
 pub struct BufferLayout {
@@ -160,19 +162,28 @@ pub struct DynamicBuffer {
     buffer: wgpu::Buffer,
     length: u64,
     label: String,
+    usage: wgpu::BufferUsages,
 }
 
 impl DynamicBuffer {
-    fn new(device: &wgpu::Device, label: &str, initial_size: u64) -> Self {
-        let buffer = Self::create_buffer(device, label, initial_size);
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        label: &str,
+        initial_size: u64,
+        usage: wgpu::BufferUsages,
+    ) -> Self {
+        let usage = usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
+        let buffer = Self::create_buffer(device, label, initial_size, usage);
         Self {
             buffer,
             length: 0,
-            label: label.to_string()
+            label: label.to_string(),
+            usage
+
         }
     }
 
-    fn extend(
+    pub(crate) fn extend(
         &mut self, 
         data: &[u8],
         device: &wgpu::Device,
@@ -180,48 +191,81 @@ impl DynamicBuffer {
         encoder: &mut wgpu::CommandEncoder
     ) -> Offset {
         let offset = self.length;
-        if data.len() as u64 + self.length <= self.buffer.size() {
-            queue.write_buffer(&self.buffer, offset, data);
-        }
-        else {
-            let new_size = self.buffer.size() * 2 + data.len() as u64 + self.length;
-            let new_buffer = Self::create_buffer(device, &self.label, new_size);
-            encoder.copy_buffer_to_buffer(
-                &self.buffer,
-                0,
-                &new_buffer,
-                0,
-                self.length
-            );
 
-            queue.write_buffer(&new_buffer, offset, data);
-            self.buffer = new_buffer;
-        }
-
-        self.length += data.len() as u64;
-
-
+        self
+            .write_with(device, queue, encoder, data.len() as u64)
+            .expect("DynamicBuffer QueueWriteBufferView")
+            .copy_from_slice(data);
         Offset {
             offset,
             size: data.len() as u64
         }
     }
 
-    fn clear(&mut self) -> &wgpu::Buffer {
+    pub(crate) fn write_with(
+        &mut self, 
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        size: u64
+    ) -> Option<wgpu::QueueWriteBufferView> {
+        self.ensure_size(device, encoder, size);
+        let view = 
+            queue.write_buffer_with(&self.buffer, self.length, NonZeroU64::new(size).unwrap())?;
+
+        self.length += size;
+        Some(view)
+    }
+
+    pub(crate) fn clear(&mut self) -> &wgpu::Buffer {
         self.length = 0;
         &self.buffer
     }
 
-    fn create_buffer(device: &wgpu::Device, label: &str, initial_size: u64) -> wgpu::Buffer {
+    pub(crate) fn buffer(&self) -> &wgpu::Buffer {
+        &self.buffer
+    }
+
+    pub(crate) fn length(&self) -> u64 {
+        self.length
+    }
+
+    fn create_buffer(device: &wgpu::Device, label: &str, initial_size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size: initial_size,
-            usage: wgpu::BufferUsages::VERTEX 
-                | wgpu::BufferUsages::INDEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
+            usage,
             mapped_at_creation: false,
         })
+    }
+
+    fn ensure_size(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        size: u64,
+    ) {
+        if size as u64 + self.length > self.buffer.size() {
+            let new_size = self.buffer.size() * 2 + size + self.length;
+            self.resize_buffer(device, encoder, new_size);
+        }
+    }
+
+    fn resize_buffer(
+        &mut self, 
+        device: &wgpu::Device, 
+        encoder: &mut wgpu::CommandEncoder, 
+        new_size: u64
+    ) {
+        let new_buffer = Self::create_buffer(device, &self.label, new_size, self.usage);
+        encoder.copy_buffer_to_buffer(
+            &self.buffer,
+            0,
+            &new_buffer,
+            0,
+            self.length
+        );
+        self.buffer = new_buffer;
     }
 }
 
@@ -232,10 +276,15 @@ pub(crate) struct StagingBufferPool {
 
 impl StagingBufferPool {
     pub(crate) fn new(device: &wgpu::Device, initial_capacity: u64) -> Self {
+
+        let usage = 
+        wgpu::BufferUsages::VERTEX
+        | wgpu::BufferUsages::INDEX;
+        
         Self {
             buffers: [
-                DynamicBuffer::new(device, "StagingBuffer1", initial_capacity),
-                DynamicBuffer::new(device, "StagingBuffer2", initial_capacity),
+                DynamicBuffer::new(device, "StagingBuffer1", initial_capacity, usage),
+                DynamicBuffer::new(device, "StagingBuffer2", initial_capacity, usage),
 
             ],
             current: 0,
@@ -260,6 +309,7 @@ impl StagingBufferPool {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Offset {
     pub(crate) offset: u64,
     pub(crate) size: u64,

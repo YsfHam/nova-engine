@@ -34,6 +34,11 @@ impl MaterialTemplate {
         &self.metadata.buffer_layout
     }
 
+    /// The optional instance buffer layout (for GPU-side instancing).
+    pub fn instance_layout(&self) -> Option<&BufferLayout> {
+        self.metadata.instance_layout.as_ref()
+    }
+
     pub fn blend_state(&self) -> BlendMode {
         self.metadata.blend_state
     }
@@ -77,6 +82,10 @@ pub struct MaterialTemplateMetadata {
     pub vertex_shader: Handle<Shader>,
     pub fragment_shader: Option<Handle<Shader>>,
     pub buffer_layout: BufferLayout,
+    /// Optional instance buffer layout (step mode `Instance`). When present,
+    /// the pipeline declares a second vertex buffer at slot 1 for per-instance
+    /// data. Enables GPU-side instancing.
+    pub instance_layout: Option<BufferLayout>,
     pub blend_state: BlendMode,
     pub depth_stencil: Option<DepthStencilConfig>,
     pub topology: Topology,

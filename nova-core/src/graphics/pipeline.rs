@@ -15,6 +15,7 @@ pub struct PipelineDescriptor<'a> {
 }
 
 
+#[derive(Clone)]
 pub struct Pipeline {
     pub pipeline: wgpu::RenderPipeline,
     pub bind_group_layout: Option<wgpu::BindGroupLayout>,
@@ -61,11 +62,29 @@ impl PipelineCache {
         // declares attributes. An empty layout (shader-generated vertices via
         // `vertex_index`) must be omitted, otherwise wgpu requires a vertex
         // buffer to be bound at draw time.
+        // When an instance layout is present, it's declared as a second vertex
+        // buffer at slot 1 (step mode Instance).
         let vbl = template.material_template.buffer_layout();
+        let il = template.material_template.instance_layout();
+
+        // Build the buffers slice. The vertex layout goes first; if the
+        // instance layout exists and is non-empty, it's appended.
+        // wgpu expects &[Option<VertexBufferLayout>] — each entry is Some
+        // (declares a buffer) or None (no buffer at that slot).
+        let vertex_wbl: Option<wgpu::VertexBufferLayout> = vbl.try_into().ok();
+        let instance_wbl: Option<wgpu::VertexBufferLayout> = il.and_then(|l| l.try_into().ok());
+
+        let buffers: Vec<Option<wgpu::VertexBufferLayout>> = match (&vertex_wbl, &instance_wbl) {
+            (Some(v), Some(i)) => vec![Some(v.clone()), Some(i.clone())],
+            (Some(v), None) => vec![Some(v.clone())],
+            (None, Some(i)) => vec![None, Some(i.clone())], // slot 0 empty, slot 1 = instance
+            (None, None) => vec![],
+        };
+
         let vertex = wgpu::VertexState {
             module: template.vertex_shader.module(),
             entry_point: Some(template.vertex_shader.entry_point()),
-            buffers: &[vbl.try_into().ok()],
+            buffers: &buffers,
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         };
 

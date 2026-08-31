@@ -33,7 +33,7 @@ use nova::{
 
 /// Starting quad count before auto-ramp kicks in.
 /// We already know 128K quads runs at ~36 FPS, so start there to save time.
-const INITIAL_QUAD_COUNT: usize = 10;
+const INITIAL_QUAD_COUNT: usize = 1_000_000;
 
 /// If the rolling-average frame time stays below this, the ramp doubles the
 /// quad count. 50.0 ms (~20 FPS) — only ramp up when we still have comfortable

@@ -1,8 +1,8 @@
-use std::{collections::HashMap, num::NonZeroU64};
-
-use wgpu::util::DeviceExt;
+use std::collections::{HashMap, HashSet};
+use std::num::NonZeroU64;
 
 use glam::{Mat4, Vec4};
+use wgpu::util::DeviceExt;
 
 use crate::assets::handle::Handle;
 use crate::graphics::material::{Material, MaterialTemplate};
@@ -67,17 +67,24 @@ impl UniformValue {
 
     /// Writes the value into `bytes` at `offset` using WGSL's std140 layout.
     pub fn write_bytes(&self, bytes: &mut [u8], offset: usize) {
+        let as_bytes = self.as_bytes();
+        let size = self.ty().size();
+
+        bytes[offset..offset+size as usize].copy_from_slice(&as_bytes);
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
         match self {
             UniformValue::Mat4(m) => {
                 let cols = m.to_cols_array();
-                bytes[offset..offset + 64].copy_from_slice(bytemuck::cast_slice(&cols));
+                bytemuck::cast_slice(&cols).to_vec()
             }
             UniformValue::Vec4(v) => {
                 let arr = v.to_array();
-                bytes[offset..offset + 16].copy_from_slice(bytemuck::cast_slice(&arr));
+                bytemuck::cast_slice(&arr).to_vec()
             }
             UniformValue::F32(x) => {
-                bytes[offset..offset + 4].copy_from_slice(bytemuck::cast_slice(&[*x]));
+                bytemuck::cast_slice(&[*x]).to_vec()
             }
         }
     }
@@ -273,7 +280,8 @@ pub struct UniformAllocation {
 }
 
 /// A material entry ready to be packed into the uniform pool. Produced by
-/// the caller when invoking [`MaterialUniformPool::build`].
+/// the caller when invoking [`MaterialUniformPool::build`] or
+/// [`MaterialUniformPool::extend`].
 pub struct MaterialUniformEntry<'a> {
     pub handle: Handle<Material>,
     pub material: &'a Material,
@@ -282,154 +290,198 @@ pub struct MaterialUniformEntry<'a> {
 
 /// The shared, persistent uniform buffer for all material uniforms.
 ///
-/// The buffer is built in a **batch** from an iterator of materials: the
-/// caller passes every material that should be in the buffer, the pool packs
-/// each uniform binding (in `template.uniform_layout()` order) into the
-/// shared `wgpu::Buffer` at its own aligned offset, and records the
-/// `(offset, size)` per `(material handle, binding slot)`.
+/// The buffer uses a [`DynamicBuffer`] that **grows** (doubles) when new
+/// materials are added — it is never recreated from scratch unless a
+/// material is **removed** from the asset storage. This avoids the
+/// per-frame `create_buffer_init` cost.
 ///
-/// The caller controls when to (re)build:
-/// - First frame, or after materials were added/removed → call `build`.
-/// - Subsequent frames with no material changes → reuse the cached buffer
-///   via [`binding_resource`] / [`buffer`].
+/// The pool tracks which material handles it has allocations for. The
+/// caller asks:
+/// - [`extend`] — adds new materials (those not already tracked). Only
+///   their uniform bytes are appended; existing allocations are untouched.
+/// - [`detect_removed`] — checks whether any tracked material handle no
+///   longer exists in the `AssetsManager`. If so, the caller should
+///   [`rebuild`] the entire pool from the current material set.
 ///
-/// The pool does not grow dynamically in V1 — it sizes the buffer to exactly
-/// fit the materials passed to `build`. If the material set changes, `build`
-/// is called again with the new full set, which recreates the buffer.
-pub struct MaterialUniformPool {
-    buffer: Option<wgpu::Buffer>,
+/// The pool feeds bind group 1 (material). The `BindGroupAllocator` asks
+/// the pool for a [`wgpu::BindingResource`] per uniform binding (by material
+/// handle + binding slot) when building a material's bind group.
+pub(crate) struct MaterialUniformPool {
+    buffer: crate::graphics::buffer::DynamicBuffer,
     /// Per-uniform allocations, keyed by `(material handle, binding slot)`.
     allocations: HashMap<(Handle<Material>, u32), UniformAllocation>,
+    /// Which material handles we have allocations for.
+    materials: HashSet<Handle<Material>>,
+    /// The device's uniform-buffer offset alignment, captured on first use.
+    align: u64,
 }
 
 impl MaterialUniformPool {
-    pub fn new() -> Self {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
+        let buffer = crate::graphics::buffer::DynamicBuffer::new(
+            device,
+            "Material uniform pool",
+            256, // start small — grows on demand
+            wgpu::BufferUsages::UNIFORM,
+        );
         Self {
-            buffer: None,
+            buffer,
             allocations: HashMap::new(),
+            materials: HashSet::new(),
+            align: device
+                .limits()
+                .min_uniform_buffer_offset_alignment
+                .max(1) as u64,
         }
     }
 
-    /// Builds the shared uniform buffer from the given materials.
+    /// Returns `true` if the pool has at least one material allocated.
+    pub fn is_built(&self) -> bool {
+        !self.materials.is_empty()
+    }
+
+    /// Returns `true` if `handle` is already tracked by the pool.
+    pub fn has_material(&self, handle: Handle<Material>) -> bool {
+        self.materials.contains(&handle)
+    }
+
+    /// Returns `true` if any tracked material handle no longer resolves in
+    /// the given `AssetsManager` — i.e. the material was removed from the
+    /// asset storage. The caller should call [`rebuild`] when this returns
+    /// `true`.
+    pub(crate) fn detect_removed(
+        &self,
+        assets: &crate::assets::AssetsManager,
+    ) -> bool {
+        self.materials
+            .iter()
+            .any(|handle| assets.get_asset(*handle).is_none())
+    }
+
+    /// Appends new materials (those not already tracked) to the uniform
+    /// buffer. Existing allocations are untouched. Each uniform binding in
+    /// the material's template layout gets its own aligned offset in the
+    /// shared buffer.
     ///
-    /// Each uniform binding in a material's template layout gets its own
-    /// aligned slot in the shared buffer. The material must provide a
-    /// `UniformValue` of the declared type for every binding (validated at
-    /// load time by `MaterialLoader`, so this is infallible at the packing
-    /// stage).
-    ///
-    /// The caller should call this when the material set has changed
-    /// (materials added/removed). Otherwise, reuse the cached buffer via
-    /// [`binding_resource`] / [`buffer`].
-    pub fn build<'a, I>(
+    /// Returns `true` if any new materials were added (i.e. the buffer
+    /// changed and bind groups for the new materials need creation).
+    pub(crate) fn extend<'a, I>(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
         materials: I,
-    ) where
+    ) -> bool
+    where
         I: IntoIterator<Item = MaterialUniformEntry<'a>>,
     {
-        self.allocations.clear();
-
-        // GPU uniform-buffer offsets must respect
-        // `min_uniform_buffer_offset_alignment` (typically 256). Each uniform
-        // binding gets its own aligned offset, so every BindGroupEntry that
-        // references the shared buffer is correctly aligned.
-        let align = device
-            .limits()
-            .min_uniform_buffer_offset_alignment
-            .max(1) as u64;
-
-        // First pass: assign each uniform binding its own aligned offset and
-        // collect the values to write.
-        let mut cursor: u64 = 0;
-        // (material handle, binding slot, offset, value)
-        let mut pending: Vec<(Handle<Material>, u32, u64, UniformValue)> = Vec::new();
+        let mut added = false;
 
         for entry in materials {
+            // Skip materials already tracked — their allocations are stable.
+            if self.materials.contains(&entry.handle) {
+                continue;
+            }
+
             let layout = entry.template.uniform_layout();
             let material_uniforms = entry.material.uniforms();
+            let align = self.align;
 
             for binding in layout {
                 let value = material_uniforms
                     .get(&binding.name)
                     .copied()
                     .expect("MaterialLoader validation guarantees every declared uniform is provided");
-                debug_assert_eq!(value.ty(), binding.ty, "type mismatch — validation should have caught this");
+                debug_assert_eq!(
+                    value.ty(), binding.ty,
+                    "type mismatch — validation should have caught this"
+                );
+
+                // The DynamicBuffer's current length is our cursor. Align it
+                // by writing padding bytes first.
+                let current_len = self.buffer.length();
+                let aligned_offset = current_len.next_multiple_of(align);
+                if aligned_offset > current_len {
+                    let padding = vec![0u8; (aligned_offset - current_len) as usize];
+                    self.buffer.extend(&padding, device, queue, encoder);
+                }
 
                 let size = value.ty().size();
-                cursor = cursor.next_multiple_of(align);
-                let offset = cursor;
+                let view = self.buffer.write_with(device, queue, encoder, size);
+                if let Some(mut view) = view {
+                    view.slice(..size as usize)
+                    .copy_from_slice(&value.as_bytes());
+                }
+
 
                 self.allocations.insert(
                     (entry.handle, binding.binding_slot),
-                    UniformAllocation { offset, size },
+                    UniformAllocation {
+                        offset: aligned_offset,
+                        size,
+                    },
                 );
-                pending.push((entry.handle, binding.binding_slot, offset, value));
-                cursor += size;
             }
+
+            self.materials.insert(entry.handle);
+            added = true;
         }
 
-        // Pad the total to the alignment so the buffer size is a clean
-        // multiple (avoids trailing-misalignment issues on some drivers).
-        let total_size = cursor.next_multiple_of(align);
-
-        // Second pass: write each uniform's bytes at its assigned offset.
-        let mut bytes = vec![0u8; total_size as usize];
-        for (_handle, _slot, offset, value) in pending {
-            value.write_bytes(&mut bytes, offset as usize);
-        }
-
-        self.buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Material uniform pool buffer"),
-            contents: &bytes,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        }));
+        added
     }
 
-    /// Returns the cached GPU buffer, if built.
-    pub fn buffer(&self) -> Option<&wgpu::Buffer> {
-        self.buffer.as_ref()
+    /// Full rebuild: clears all allocations and re-packs every material from
+    /// scratch. Use when a material was removed from the asset storage
+    /// (detected via [`detect_removed`]).
+    pub(crate) fn rebuild<'a, I>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        materials: I,
+    ) where
+        I: IntoIterator<Item = MaterialUniformEntry<'a>>,
+    {
+        self.allocations.clear();
+        self.materials.clear();
+        self.buffer.clear();
+
+        // Reuse extend to do the actual packing into the freshly cleared buffer.
+        self.extend(device, queue, encoder, materials);
+    }
+
+    /// Returns the cached GPU buffer.
+    pub fn buffer(&self) -> &wgpu::Buffer {
+        self.buffer.buffer()
     }
 
     /// Returns the per-uniform allocation for a `(material, binding_slot)`
     /// pair, if the pool was built with it.
-    pub fn allocation(&self, handle: Handle<Material>, binding_slot: u32) -> Option<UniformAllocation> {
+    pub fn allocation(
+        &self,
+        handle: Handle<Material>,
+        binding_slot: u32,
+    ) -> Option<UniformAllocation> {
         self.allocations.get(&(handle, binding_slot)).copied()
     }
 
     /// Builds a [`wgpu::BindingResource`] for a single uniform binding,
-    /// referencing the shared buffer at the binding's aligned offset. This is
-    /// what `BindGroupAllocator` uses when creating a material's bind group —
-    /// it asks the pool for each binding's resource by `(handle, slot)` and
-    /// never computes offsets itself.
+    /// referencing the shared buffer at the binding's aligned offset.
     ///
     /// # Panics
-    /// Panics if the pool has not been built or the `(material, slot)` pair
-    /// was not included in the last `build` call.
+    /// Panics if the `(material, slot)` pair was not included in the pool.
     pub fn binding_resource<'a>(
         &'a self,
         handle: Handle<Material>,
         binding_slot: u32,
     ) -> wgpu::BindingResource<'a> {
-        let buffer = self.buffer()
-            .expect("MaterialUniformPool buffer has not been built — call build first");
+        let buffer = self.buffer();
         let allocation = self.allocation(handle, binding_slot)
-            .expect("MaterialUniformPool has no allocation for this (material, binding slot) — call build first");
+            .expect("MaterialUniformPool has no allocation for this (material, binding slot)");
         wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer,
             offset: allocation.offset,
-            size: Some(std::num::NonZeroU64::new(allocation.size).unwrap()),
+            size: Some(NonZeroU64::new(allocation.size).unwrap()),
         })
-    }
-
-    /// Whether the pool currently holds a built buffer.
-    pub fn is_built(&self) -> bool {
-        self.buffer.is_some()
-    }
-
-    /// Clears the pool (buffer + allocations). The next `build` will recreate.
-    pub fn clear(&mut self) {
-        self.buffer = None;
-        self.allocations.clear();
     }
 }

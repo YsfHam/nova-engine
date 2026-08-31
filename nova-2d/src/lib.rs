@@ -6,3 +6,4 @@ pub mod render2d;
 pub mod camera;
 pub mod plugin;
 pub mod defaults;
+pub mod instance;

@@ -1,7 +1,7 @@
 
 use std::{cell::{Ref, RefCell, RefMut}, rc::Rc};
 
-use crate::{EngineResult, graphics::{bind::BindGroupAllocator, buffer::StagingBufferPool, context::GraphicsContext, frame::Frame, pipeline::PipelineCache, render_target::TextureRenderTarget, texture::TextureFormat}};
+use crate::{EngineResult, graphics::{bind::BindGroupAllocator, buffer::StagingBufferPool, context::GraphicsContext, frame::Frame, geometry::GeometryPool, pipeline::PipelineCache, render_target::TextureRenderTarget, texture::TextureFormat}};
 
 
 /// A clonable, interior-mutable handle to the [`RenderContext`].
@@ -64,6 +64,44 @@ impl RenderContextRef {
     ) -> TextureRenderTarget {
         self.inner.borrow().create_texture_target(width, height, format, label)
     }
+
+    /// Inserts shared geometry into the persistent [`GeometryPool`] and
+    /// returns a [`GeometryRef`] that can be used in
+    /// [`DrawBatch::with_shared_geometry`](crate::graphics::draw_batch::DrawBatch::with_shared_geometry).
+    ///
+    /// The geometry is uploaded immediately and its offsets are permanent.
+    /// Call this once (at init, when a mesh loads, etc.) — not per frame.
+    pub fn insert_geometry(
+        &self,
+        vertices: &[u8],
+        indices: &[u16],
+    ) -> crate::graphics::geometry::GeometryRef {
+        let mut ctx = self.inner.borrow_mut();
+        let RenderContext {
+            gfx,
+            geometry_pool,
+            command_buffers,
+            ..
+        } = &mut *ctx;
+        let device = &gfx.device;
+        let queue = &gfx.queue;
+        let mut encoder = device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let geo = geometry_pool.insert(
+            vertices,
+            indices,
+            device,
+            queue,
+            &mut encoder,
+        );
+        // Submit the encoder (may contain buffer resize copies).
+        if let Some(buffers) = command_buffers.as_mut() {
+            buffers.push(encoder.finish());
+            let cmd_buffers = std::mem::take(buffers);
+            gfx.queue.submit(cmd_buffers);
+        }
+        geo
+    }
 }
 
 /// The central GPU state hub: device, queue, pipeline cache, bind group
@@ -76,6 +114,7 @@ pub struct RenderContext {
     pub(crate) pipeline_cache: PipelineCache,
     pub(crate) bind_group_allocator: BindGroupAllocator,
     pub(crate) staging_buffer_pool: StagingBufferPool,
+    pub(crate) geometry_pool: GeometryPool,
     command_buffers: Option<Vec<wgpu::CommandBuffer>>,
 }
 
@@ -83,8 +122,9 @@ impl RenderContext {
     pub(crate) fn new(gfx: GraphicsContext) -> Self {
         Self {
             pipeline_cache: PipelineCache::new(),
-            bind_group_allocator: BindGroupAllocator::new(),
+            bind_group_allocator: BindGroupAllocator::new(&gfx.device),
             staging_buffer_pool: StagingBufferPool::new(&gfx.device, 1024 * 1024),
+            geometry_pool: GeometryPool::new(&gfx.device),
             gfx,
             command_buffers: Some(Vec::new()),
         }

@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
+use wgpu::CommandEncoder;
+
 use crate::{
-    assets::{handle::Handle, resolve::ResolvedMaterial},
+    assets::{handle::Handle, resolve::ResolvedMaterial, AssetsManager},
     graphics::{
         material::Material,
         uniform::{MaterialUniformEntry, MaterialUniformPool},
@@ -12,20 +14,23 @@ use crate::{
 //  BindGroupAllocator — caches per-material bind groups (group 1).
 //
 //  The allocator owns the [`MaterialUniformPool`] (the shared, persistent
-//  buffer for all material uniforms) and a `HashMap<Handle<Material>,
+//  `DynamicBuffer` for all material uniforms) and a `HashMap<Handle<Material>,
 //  wgpu::BindGroup>` cache. Materials are immutable, so their bind groups
 //  are built once and never invalidated — a perfect cache.
 //
-//  Flow:
-//  1. The caller (the entity setting up the render pass) calls
-//     [`build_uniform_pool`] with every material that will be drawn this
-//     frame, when it decides the pool needs (re)building. This packs all
-//     uniform values into one `wgpu::Buffer` and records each material's
-//     `(offset, size)`.
-//  2. For each draw, the caller calls [`get_or_create`] with the material
-//     handle, the resolved textures, and the material bind group layout.
-//     The allocator looks up the cached bind group, or builds it from the
-//     pool's buffer (at the material's offset) + the texture views/samplers.
+//  The uniform pool **extends** (appends new materials) rather than rebuilding
+//  from scratch every frame. A full rebuild only happens when a material is
+//  detected as removed from the asset storage.
+//
+//  Flow (called from `submit_batches`):
+//  1. [`detect_removed`] — checks if any tracked material handle no longer
+//     exists in the `AssetsManager`. If so, [`rebuild`] is called with the
+//     full current material set, which clears and re-packs everything.
+//  2. [`extend`] — appends only the **new** materials (those not already
+//     tracked). Returns `true` if anything was added.
+//  3. [`build_bind_groups`] — creates bind groups for the newly added
+//     materials (those that don't have a cached bind group yet).
+//  4. For each draw, [`get_bind_group`] returns the cached bind group.
 // ──────────────────────────────────────────────────────────────────────────
 
 pub struct BindGroupAllocator {
@@ -34,47 +39,63 @@ pub struct BindGroupAllocator {
 }
 
 impl BindGroupAllocator {
-    pub fn new() -> Self {
+    pub fn new(device: &wgpu::Device) -> Self {
         Self {
-            uniform_pool: MaterialUniformPool::new(),
+            uniform_pool: MaterialUniformPool::new(device),
             bind_groups: HashMap::new(),
         }
     }
 
-    /// (Re)builds the shared material uniform buffer from the given materials.
-    ///
-    /// The caller decides when to call this: on the first frame, or after
-    /// materials have been added/removed. On subsequent frames with no
-    /// material changes, the cached buffer is reused (accessed via
-    /// [`uniform_pool`](Self::uniform_pool) or [`get_or_create`]).
-    ///
-    /// This also clears the bind group cache, since offsets may have changed.
-    pub fn build_uniform_pool<'a, I>(
+    /// Returns `true` if any tracked material handle no longer exists in the
+    /// given `AssetsManager` — i.e. the material was removed from the asset
+    /// storage. The caller should call [`rebuild`](Self::rebuild) when this
+    /// returns `true`.
+    pub(crate) fn detect_removed(&self, assets: &AssetsManager) -> bool {
+        self.uniform_pool.detect_removed(assets)
+    }
+
+    /// Full rebuild: clears all uniform allocations and bind groups, then
+    /// re-packs every material from the given entries. Use when a material
+    /// was removed from the asset storage.
+    pub(crate) fn rebuild<'a, I>(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut CommandEncoder,
         materials: I,
     ) where
         I: IntoIterator<Item = MaterialUniformEntry<'a>>,
     {
-        self.uniform_pool.build(device, materials);
+        self.uniform_pool.rebuild(device, queue, encoder, materials);
         self.bind_groups.clear();
     }
 
-    
-    pub fn get_or_create(
+    /// Appends new materials (those not already tracked) to the uniform
+    /// buffer. Returns `true` if any new materials were added.
+    pub(crate) fn extend<'a, I>(
         &mut self,
         device: &wgpu::Device,
-        material: ResolvedMaterial<'_>,
-        material_bind_group_layout: &wgpu::BindGroupLayout,
+        queue: &wgpu::Queue,
+        encoder: &mut CommandEncoder,
+        materials: I,
+    ) -> bool
+    where
+        I: IntoIterator<Item = MaterialUniformEntry<'a>>,
+    {
+        self.uniform_pool.extend(device, queue, encoder, materials)
+    }
+
+    pub(crate) fn get_or_build_bind_group(
+        &mut self,
+        device: &wgpu::Device,
+        material: &ResolvedMaterial<'_>,
+        layout: &wgpu::BindGroupLayout
     ) -> &wgpu::BindGroup {
         if !self.bind_groups.contains_key(&material.handle) {
-            let bind_group = self.create_bind_group(
-                device,
-                &material,
-                material_bind_group_layout,
-            );
-            self.bind_groups.insert(material.handle, bind_group);
+            let bg = self.create_bind_group(device, &material, layout);
+            self.bind_groups.insert(material.handle, bg);
         }
+
         self.bind_groups.get(&material.handle).unwrap()
     }
 
@@ -94,8 +115,7 @@ impl BindGroupAllocator {
 
         // Per-uniform buffer entries. The pool owns per-uniform allocations
         // keyed by (material handle, binding slot); we simply ask it for each
-        // binding's `BindingResource`. The pool handles offset alignment to
-        // `min_uniform_buffer_offset_alignment` — no offset math here.
+        // binding's `BindingResource`.
         for binding in uniform_bindings {
             entries.push(wgpu::BindGroupEntry {
                 binding: binding.binding_slot,
@@ -128,23 +148,17 @@ impl BindGroupAllocator {
         })
     }
 
-    /// Access the underlying uniform pool (e.g., to check `is_built`).
-    pub fn uniform_pool(&self) -> &MaterialUniformPool {
+    /// Access the underlying uniform pool.
+    pub(crate) fn uniform_pool(&self) -> &MaterialUniformPool {
         &self.uniform_pool
     }
 
-    /// Mutable access to the underlying uniform pool (e.g., to `clear`).
-    pub fn uniform_pool_mut(&mut self) -> &mut MaterialUniformPool {
-        &mut self.uniform_pool
-    }
-
-    /// Whether the uniform pool has been built.
+    /// Whether the uniform pool has at least one material allocated.
     pub fn is_uniform_pool_built(&self) -> bool {
         self.uniform_pool.is_built()
     }
 
-    /// Clears the bind group cache (keeps the uniform pool). Call if
-    /// bind groups need recreation but the buffer is still valid.
+    /// Clears the bind group cache (keeps the uniform pool).
     pub fn clear_bind_groups(&mut self) {
         self.bind_groups.clear();
     }
