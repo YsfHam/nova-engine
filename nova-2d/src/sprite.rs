@@ -80,8 +80,12 @@ pub struct SpriteAtlas {
     material: Handle<Material>,
     /// Number of columns/rows in the grid (atlas_size / sprite_size).
     grid: Vec2,
-    /// Normalized size of one sprite cell (sprite_size / atlas_size).
-    cell_uv: Vec2,
+    /// Pixel size of each cell. Used to compute UVs in pixel space first,
+    /// then normalize — avoids floating-point error accumulation across rows
+    /// (e.g. 1/6 = 0.1666... repeating in binary).
+    cell_size: Vec2,
+    /// Atlas texture dimensions in pixels. Used for UV normalization.
+    atlas_size: Vec2,
 }
 
 impl SpriteAtlas {
@@ -91,11 +95,11 @@ impl SpriteAtlas {
     /// the dimensions of each cell in pixels. The atlas must divide evenly.
     pub fn new(material: Handle<Material>, atlas_size: Vec2, sprite_size: Vec2) -> Self {
         let grid = atlas_size / sprite_size;
-        let cell_uv = sprite_size / atlas_size;
         Self {
             material,
             grid,
-            cell_uv,
+            cell_size: sprite_size,
+            atlas_size,
         }
     }
 
@@ -113,12 +117,17 @@ impl SpriteAtlas {
             return None;
         }
 
-        // Normalized UV rect: top-left corner of the cell, sized to one cell.
-        let left = col as f32 * self.cell_uv.x;
-        let top = row as f32 * self.cell_uv.y;
-        let right = left + self.cell_uv.x;
-        let bottom = top + self.cell_uv.y;
+        let px_left = col as f32 * self.cell_size.x;
+        let px_top = row as f32 * self.cell_size.y;
+        let px_right = px_left + self.cell_size.x;
+        let px_bottom = px_top + self.cell_size.y;
 
+        // Normalize to 0..1 UV space.
+        let left = px_left / self.atlas_size.x;
+        let top = px_top / self.atlas_size.y;
+        let right = px_right / self.atlas_size.x;
+        let bottom = px_bottom / self.atlas_size.y;
+        
         Some(Sprite::new(
             self.material,
             RectF32 { top, left, bottom, right },

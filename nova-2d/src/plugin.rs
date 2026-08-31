@@ -1,6 +1,6 @@
-use nova_core::{assets::defaults::CoreDefaultAssets, graphics::{material::{Material, MaterialTemplate}, shader::Shader}, plugin::Plugin};
+use nova_core::{assets::defaults::CoreDefaultAssets, graphics::{material::{Material, MaterialTemplate}, sampler::Sampler, shader::Shader}, plugin::Plugin};
 
-use crate::batcher::set_quad_geometry;
+use crate::{batcher::set_quad_geometry, defaults::pixelated_sampler};
 use crate::defaults::{Nova2dDefaults, default_material, default_material_template, default_shader};
 use crate::vertex::BaseVertex2D;
 
@@ -17,10 +17,13 @@ impl Plugin for Nova2DPlugin {
         let white_texture = ctx.default_assets.expect(CoreDefaultAssets::WhiteTexture);
         
         let material = ctx.assets_manager.load::<Material>(default_material(template, white_texture))?;
+
+        let sampler = ctx.assets_manager.load::<Sampler>(pixelated_sampler())?;
         
         ctx.default_assets.insert(Nova2dDefaults::TexturedQuadShader, shader)?;
         ctx.default_assets.insert(Nova2dDefaults::TexturedQuadMaterialTemplate, template)?;
         ctx.default_assets.insert(Nova2dDefaults::WhiteTextureMaterial, material)?;
+        ctx.default_assets.insert(Nova2dDefaults::PixelatedSampler, sampler)?;
 
         // Register the shared base quad geometry (4 vertices + 6 indices).
         // This is uploaded once to the persistent geometry buffer and reused

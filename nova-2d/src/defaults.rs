@@ -1,4 +1,28 @@
-use nova_core::{assets::{defaults::DefaultAssetsKey, handle::Handle}, graphics::{buffer::{InstanceBufferLayout, VertexBufferLayout, VertexFormat}, material::{BlendMode, MaterialMetadata, MaterialTemplate, MaterialTemplateMetadata}, shader::{Shader, ShaderEntryPoint, ShaderMetadata}, texture::{SamplerBindingType, Texture, TextureBinding, TextureViewDimension}}};
+use nova_core::{app::ApplicationContext, assets::{defaults::DefaultAssetsKey, error::AssetError, handle::Handle}, graphics::{buffer::{InstanceBufferLayout, VertexBufferLayout, VertexFormat}, material::{BlendMode, Material, MaterialMetadata, MaterialTemplate, MaterialTemplateMetadata}, sampler::{FilterMode, SamplerMetadata}, shader::{Shader, ShaderEntryPoint, ShaderMetadata}, texture::{SamplerBindingType, Texture, TextureBinding, TextureMetadata, TextureViewDimension}}};
+
+pub fn create_material_with_texture_meta(
+    ctx: &mut ApplicationContext, 
+    texture_meta: TextureMetadata) 
+    -> Result<Handle<Material>, AssetError> {
+    let texture = ctx.assets_manager.load(texture_meta)?;
+    create_material_with_texture(ctx, texture)
+}
+
+pub fn create_material_with_texture(
+    ctx: &mut ApplicationContext, 
+    texture: Handle<Texture>) 
+    -> Result<Handle<Material>, AssetError> {
+    let template = 
+        ctx
+        .default_assets
+        .expect::<MaterialTemplate>(Nova2dDefaults::TexturedQuadMaterialTemplate);
+
+    ctx.assets_manager
+    .load(
+        MaterialMetadata::new(template)
+        .with_texture(0, texture)
+    )
+}
 
 pub(crate) fn default_shader() -> ShaderMetadata {
     ShaderMetadata::from_inline(
@@ -49,10 +73,18 @@ pub(crate) fn default_material(material_template: Handle<MaterialTemplate>, whit
     .with_texture(0, white_texture)
 }
 
+pub(crate) fn pixelated_sampler() -> SamplerMetadata {
+    SamplerMetadata {
+        mag_filter: FilterMode::Nearest,
+        ..Default::default()
+    }
+}
+
 pub enum Nova2dDefaults {
     TexturedQuadShader,
     TexturedQuadMaterialTemplate,
     WhiteTextureMaterial,
+    PixelatedSampler,
 }
 
 impl DefaultAssetsKey for Nova2dDefaults {
@@ -61,6 +93,7 @@ impl DefaultAssetsKey for Nova2dDefaults {
             Nova2dDefaults::TexturedQuadShader => "TexturedQuadShader",
             Nova2dDefaults::TexturedQuadMaterialTemplate => "TexturedQuadMaterialTemplate",
             Nova2dDefaults::WhiteTextureMaterial => "WhiteTextureMaterial",
+            Nova2dDefaults::PixelatedSampler => "PixelatedSampler",
         }
     }
 }
