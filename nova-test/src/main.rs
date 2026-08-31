@@ -415,6 +415,9 @@ impl ApplicationProxy for AppProxy {
         let total_start = Instant::now();
 
         let mut renderer = Render2D::begin_scene(commander);
+        // Pre-allocate instance vectors to avoid reallocation churn.
+        // Estimate: quads / (3 materials × 3 z-layers) ≈ quads / 9 per group.
+        renderer.reserve(self.quad_count / 9);
 
         let draw_start = Instant::now();
         let count = self.quad_count;

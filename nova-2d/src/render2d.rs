@@ -17,6 +17,13 @@ impl<'a> Render2D<'a> {
         }
     }
 
+    /// Pre-allocates capacity for `hint` instances per material group.
+    /// Call before `draw_quad` if you know the quad count — eliminates
+    /// reallocation churn as instance vectors grow.
+    pub fn reserve(&mut self, hint: usize) {
+        self.batcher.reserve(hint);
+    }
+
     pub fn draw_quad(&mut self, quad: Quad) {
         self.batcher.add_quad(quad);
     }

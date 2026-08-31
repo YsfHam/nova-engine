@@ -30,59 +30,78 @@ fn quad_geometry() -> GeometryRef {
 
 pub struct Batcher2D {
     layers: BTreeMap<u32, BatchLayer>,
+    /// Hint: expected number of quads per material group. Used to pre-allocate
+    /// instance vectors, avoiding repeated reallocations as they grow.
+    /// Set via [`Batcher2D::reserve`]. Defaults to 0 (grow on demand).
+    capacity_hint: usize,
 }
 
 impl Batcher2D {
     pub fn new() -> Self {
         Self {
             layers: BTreeMap::new(),
+            capacity_hint: 0,
         }
+    }
+
+    /// Pre-allocates capacity for `hint` instances per material group. Call
+    /// before `add_quad` if you know (or can estimate) the quad count —
+    /// eliminates the reallocation churn as `Vec<InstanceData2D>` grows.
+    pub fn reserve(&mut self, hint: usize) {
+        self.capacity_hint = hint;
     }
 
     pub fn add_quad(&mut self, quad: Quad) {
         self.layers.entry(quad.z_index)
             .or_insert_with(BatchLayer::new)
-            .add_quad(quad);
+            .add_quad(quad, self.capacity_hint);
     }
 
     pub fn into_iter(self) -> impl Iterator<Item = DrawBatch> {
         self.layers
             .into_iter()
-            .flat_map(|(_, layer)| layer.batches)
+            .flat_map(|(_, layer)| {
+                layer.instances
+            })
+            .map(|(material, instances)| {
+                DrawBatch::with_shared_geometry(material, quad_geometry())
+                .with_instances(&instances, std::mem::size_of::<InstanceData2D>() as u32)
+            })
     }
 }
 
 struct BatchLayer {
     index_map: HashMap<Handle<Material>, usize>,
-    batches: Vec<DrawBatch>,
+    instances: Vec<(Handle<Material>, Vec<InstanceData2D>)>,
 }
 
 impl BatchLayer {
     fn new() -> Self {
         Self {
             index_map: HashMap::new(),
-            batches: Vec::new(),
+            instances: Vec::new(),
         }
     }
 
-    fn add_quad(&mut self, quad: Quad) {
+    fn add_quad(&mut self, quad: Quad, capacity_hint: usize) {
         // Build the per-instance data: transform, color, UV rect.
         let instance = InstanceData2D::new(quad.transform(), quad.color, quad.uv);
 
         // Find or create the batch for this material.
         let batch_index = *self.index_map.entry(quad.material)
             .or_insert_with(|| {
-                let geo = quad_geometry();
-                self.batches.push(
-                    DrawBatch::with_shared_geometry(quad.material, geo)
+                let mut instances = Vec::new();
+                if capacity_hint > 0 {
+                    instances.reserve(capacity_hint);
+                }
+                self.instances.push(
+                    (quad.material, instances)
                 );
-                self.batches.len() - 1
+                self.instances.len() - 1
             });
-        let batch = &mut self.batches[batch_index];
+        let (_, instances) = &mut self.instances[batch_index];
 
-        // Add the instance data. The batch references shared geometry for
-        // vertices/indices (uploaded once) and accumulates per-instance data
-        // (uploaded each frame).
-        batch.add_instances(&[instance]);
+        // Add the instance data.
+        instances.push(instance);
     }
 }
