@@ -121,8 +121,8 @@ impl ApplicationProxy for OverlapProxy {
         );
 
         let mut renderer = Render2D::begin_scene(commander);
-        renderer.draw_quad(quad_a);
-        renderer.draw_quad(quad_b);
+        renderer.draw(quad_a);
+        renderer.draw(quad_b);
         renderer.end_scene(RenderPassDescriptor::new(), &ctx.assets_manager);
     }
 }

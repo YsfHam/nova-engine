@@ -7,3 +7,4 @@ pub mod camera;
 pub mod plugin;
 pub mod defaults;
 pub mod instance;
+pub mod sprite;

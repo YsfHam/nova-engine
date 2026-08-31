@@ -24,8 +24,8 @@ impl<'a> Render2D<'a> {
         self.batcher.reserve(hint);
     }
 
-    pub fn draw_quad(&mut self, quad: Quad) {
-        self.batcher.add_quad(quad);
+    pub fn draw(&mut self, quad: impl Into<Quad>) {
+        self.batcher.add_quad(quad.into());
     }
 
     pub fn end_scene(self, pass_descriptor: RenderPassDescriptor, assets: &AssetsManager) {

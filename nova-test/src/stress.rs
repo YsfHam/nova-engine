@@ -424,7 +424,7 @@ impl ApplicationProxy for AppProxy {
         let count = self.quad_count;
         let cache = &self.quad_cache;
         for i in 0..count {
-            renderer.draw_quad(cache[i]);
+            renderer.draw(cache[i]);
         }
         let draw_elapsed = draw_start.elapsed();
 
