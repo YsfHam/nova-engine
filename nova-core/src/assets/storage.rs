@@ -1,4 +1,12 @@
-use crate::assets::{Asset, handle::Handle};
+use std::any::Any;
+
+use crate::assets::{Asset, handle::{GenericHandle, Handle}};
+
+pub(crate) trait ErasedStorage {
+    fn get_any(&self, handle: GenericHandle) -> Option<&dyn Any>;
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
 
 struct Slot<A: Asset> {
     data: Option<A>,
@@ -83,6 +91,22 @@ impl<A: Asset> AssetStorage<A> {
         slot.data = Some(asset);
 
         (handle, next_empty)
+    }
+}
+
+impl<A: Asset> ErasedStorage for AssetStorage<A> {
+    fn get_any(&self, handle: GenericHandle) -> Option<&dyn Any> {
+ let typed = handle.try_into_handle::<A>().ok()?;
+ self.get(typed)
+ .map(|a| a as &dyn Any)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

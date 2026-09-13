@@ -10,12 +10,11 @@ use nova::{
         assets::handle::Handle,
         graphics::{
             color::Color,
-            environment::{EnvironmentDescriptor, EnvironmentUniform},
             frame::Frame,
-            material::{Material, MaterialMetadata},
+            material::{BindGroup, BindGroupEntry},
             render_pass::RenderPassDescriptor,
             shader::ShaderStage,
-            texture::{Texture, TextureMetadata, TextureSize},
+            texture::{Texture, TextureConfig, TextureSize},
             uniform::UniformValue,
         },
         math::{Vec2, vec2},
@@ -24,8 +23,9 @@ use nova::{
     nova2d::{
         camera::Camera2D,
         defaults::Nova2dDefaults,
-        quad::Quad,
+        materials::{ColorMaterial, SpriteMaterial},
         render2d::Render2D,
+        sprite::Sprite,
         utils::RectF32,
     },
 };
@@ -120,15 +120,15 @@ impl QuadArchetype {
 pub struct AppProxy {
     // Materials — one per visual "kind" so the batcher produces multiple
     // draw batches (testing multi-batch / multi-draw-call performance).
-    flat_material: Option<Handle<Material>>,
-    checker_red_material: Option<Handle<Material>>,
-    checker_green_material: Option<Handle<Material>>,
+    flat_material: Option<Handle<ColorMaterial>>,
+    checker_red_material: Option<Handle<SpriteMaterial>>,
+    checker_green_material: Option<Handle<SpriteMaterial>>,
 
-    // Quad cache: quads are deterministic (modulo total_time for rotation, but
+    // Sprite cache: sprites are deterministic (modulo total_time for rotation, but
     // we snapshot at cache-fill time). We build the cache lazily — when the
-    // quad count grows we extend it. This isolates the batcher/render cost
-    // from the per-quad construction cost.
-    quad_cache: Vec<Quad>,
+    // sprite count grows we extend it. This isolates the batcher/render cost
+    // from the per-sprite construction cost.
+    sprite_cache: Vec<Sprite>,
 
     // Stress-test state
     quad_count: usize,
@@ -152,7 +152,7 @@ impl AppProxy {
             flat_material: None,
             checker_red_material: None,
             checker_green_material: None,
-            quad_cache: Vec::new(),
+            sprite_cache: Vec::new(),
             quad_count: INITIAL_QUAD_COUNT,
             ramp_active: true,
             frame_counter: 0,
@@ -165,9 +165,9 @@ impl AppProxy {
         }
     }
 
-    /// Builds the quad for global index `i`, cycling through archetypes and
-    /// arranging quads in a scrolling grid.
-    fn make_quad(&self, i: usize, screen: Vec2) -> Quad {
+    /// Builds the sprite for global index `i`, cycling through archetypes and
+    /// arranging sprites in a scrolling grid.
+    fn make_sprite(&self, i: usize, screen: Vec2) -> Sprite {
         let archetype = QuadArchetype::from_index(i);
         let (material, color, uv) = match archetype {
             QuadArchetype::FlatColor | QuadArchetype::RotatedFlat => {
@@ -178,18 +178,18 @@ impl AppProxy {
                     2 => Color::MAGENTA,
                     _ => Color::RED,
                 };
-                (self.flat_material.unwrap(), color, full_uv())
+                (self.flat_material.unwrap().into_generic(), color, full_uv())
             }
             QuadArchetype::Textured | QuadArchetype::RotatedTextured => {
-                (self.checker_red_material.unwrap(), Color::WHITE, full_uv())
+                (self.checker_red_material.unwrap().into_generic(), Color::WHITE, full_uv())
             }
             QuadArchetype::TexturedTinted => {
-                (self.checker_red_material.unwrap(), Color::GREEN, full_uv())
+                (self.checker_red_material.unwrap().into_generic(), Color::GREEN, full_uv())
             }
             QuadArchetype::RotatedSubUv => {
                 // Sub-rect UV: use only the top-left quadrant of the texture.
                 (
-                    self.checker_green_material.unwrap(),
+                    self.checker_green_material.unwrap().into_generic(),
                     Color::YELLOW,
                     RectF32 {
                         top: 0.0,
@@ -201,14 +201,14 @@ impl AppProxy {
             }
         };
 
-        // Grid layout: arrange quads in rows across the screen.
-        // Quad size is small so we can fit many on screen.
-        let quad_size = 16.0_f32;
-        let cols = (screen.x / quad_size).ceil() as usize;
+        // Grid layout: arrange sprites in rows across the screen.
+        // Sprite size is small so we can fit many on screen.
+        let sprite_size = 16.0_f32;
+        let cols = (screen.x / sprite_size).ceil() as usize;
         let col = i % cols;
         let row = i / cols;
-        let x = col as f32 * quad_size + quad_size * 0.5;
-        let y = row as f32 * quad_size + quad_size * 0.5;
+        let x = col as f32 * sprite_size + sprite_size * 0.5;
+        let y = row as f32 * sprite_size + sprite_size * 0.5;
 
         // Animate rotation for rotated archetypes.
         let angle = if archetype.rotates() {
@@ -217,41 +217,41 @@ impl AppProxy {
             0.0
         };
 
-        // Wrap y so quads that overflow the screen wrap back to the top.
+        // Wrap y so sprites that overflow the screen wrap back to the top.
         let y_wrapped = y % screen.y;
 
         // Spread across a few z-layers to test the BTreeMap layer grouping.
         let z_index = (i % 3) as u32;
 
-        Quad::new(material)
+        Sprite::new(material)
             .with_position(vec2(x, y_wrapped))
-            .with_scale(vec2(quad_size, quad_size))
+            .with_scale(vec2(sprite_size, sprite_size))
             .with_color(color)
-            .with_angle(angle)
+            .with_angle(angle.into())
             .with_z_index(z_index)
             .with_uv(uv)
     }
 
-    /// Ensures the quad cache has at least `quad_count` entries, building
-    /// new quads for any indices beyond the current cache size.
+    /// Ensures the sprite cache has at least `quad_count` entries, building
+    /// new sprites for any indices beyond the current cache size.
     fn refill_cache(&mut self, screen: Vec2) {
-        if self.quad_cache.len() >= self.quad_count {
+        if self.sprite_cache.len() >= self.quad_count {
             return;
         }
-        let start = self.quad_cache.len();
+        let start = self.sprite_cache.len();
         for i in start..self.quad_count {
-            let quad = self.make_quad(i, screen);
-            self.quad_cache.push(quad);
+            let sprite = self.make_sprite(i, screen);
+            self.sprite_cache.push(sprite);
         }
     }
 
-    /// Refreshes the animated fields (rotation angle) on all cached quads.
+    /// Refreshes the animated fields (rotation angle) on all cached sprites.
     /// Static fields (material, color, UV, position, scale, z_index) stay
-    /// as built by `make_quad` — only the angle depends on `total_time`.
+    /// as built by `make_sprite` — only the angle depends on `total_time`.
     fn update_cache(&mut self) {
-        for (i, quad) in self.quad_cache.iter_mut().enumerate() {
+        for (i, sprite) in self.sprite_cache.iter_mut().enumerate() {
             if QuadArchetype::from_index(i).rotates() {
-                quad.angle = (self.total_time * 2.0 + i as f32 * 0.1).into();
+                sprite.angle = (self.total_time * 2.0 + i as f32 * 0.1).into();
             }
         }
     }
@@ -336,30 +336,24 @@ fn full_uv() -> RectF32 {
 
 impl ApplicationProxy for AppProxy {
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()> {
-        // Grab the default white-texture material and its template.
-        // The Nova2DPlugin already loaded the template + a default material.
-        let default_material =
-            ctx.default_assets.expect(Nova2dDefaults::WhiteTextureMaterial);
-        let template =
-            ctx.default_assets.expect(Nova2dDefaults::TexturedQuadMaterialTemplate);
-
-        // The flat-color material is the plugin's default (white texture +
-        // vertex color modulation). Reuse it directly.
-        self.flat_material = Some(default_material);
+        // The flat-color material is the plugin's default ColorMaterial.
+        // Vertex color modulation gives per-sprite color variety.
+        self.flat_material = Some(
+            ctx.default_assets
+                .expect::<ColorMaterial>(Nova2dDefaults::DefaultColorMaterial),
+        );
 
         // Create two checkerboard textures for the textured/tinted variants.
-        let default_sampler = ctx
-            .default_assets
-            .expect(nova::core::assets::defaults::CoreDefaultAssets::DefaultSampler);
-
         let red_checker_data =
             checker_texture(64, 8, [0x30, 0x10, 0x10, 0xFF], [0xE0, 0x40, 0x40, 0xFF]);
-        let red_checker = ctx.assets_manager.load::<Texture>(TextureMetadata::from_raw(
-            "red_checker",
+        let red_checker = Texture::from_raw(
             red_checker_data,
             TextureSize::new_texture2d(64, 64),
-            default_sampler,
-        ))?;
+            TextureConfig::default(),
+        );
+        let red_checker_handle = ctx.assets_manager.insert_asset(red_checker);
+        let red_material = SpriteMaterial::new(red_checker_handle);
+        self.checker_red_material = Some(ctx.assets_manager.insert_asset(red_material));
 
         let green_checker_data = checker_texture(
             64,
@@ -367,22 +361,14 @@ impl ApplicationProxy for AppProxy {
             [0x10, 0x30, 0x10, 0xFF],
             [0x40, 0xE0, 0x40, 0xFF],
         );
-        let green_checker = ctx.assets_manager.load::<Texture>(TextureMetadata::from_raw(
-            "green_checker",
+        let green_checker = Texture::from_raw(
             green_checker_data,
             TextureSize::new_texture2d(64, 64),
-            default_sampler,
-        ))?;
-
-        // Materials using the shared template + different textures.
-        // All three materials share the same pipeline (same template) —
-        // only bind groups differ, so pipeline compilation is deduplicated.
-        self.checker_red_material = Some(ctx.assets_manager.load::<Material>(
-            MaterialMetadata::new(template).with_texture(0, red_checker),
-        )?);
-        self.checker_green_material = Some(ctx.assets_manager.load::<Material>(
-            MaterialMetadata::new(template).with_texture(0, green_checker),
-        )?);
+            TextureConfig::default(),
+        );
+        let green_checker_handle = ctx.assets_manager.insert_asset(green_checker);
+        let green_material = SpriteMaterial::new(green_checker_handle);
+        self.checker_green_material = Some(ctx.assets_manager.insert_asset(green_material));
 
         Ok(())
     }
@@ -397,34 +383,33 @@ impl ApplicationProxy for AppProxy {
 
         let camera = Camera2D::with_size(screen);
 
-        // Lazily grow the quad cache to match the current quad count,
-        // then refresh animated fields (rotation) on all cached quads.
+        // Lazily grow the sprite cache to match the current quad count,
+        // then refresh animated fields (rotation) on all cached sprites.
         self.refill_cache(screen);
         self.update_cache();
 
         let mut target = frame.render_target(&ctx.render_ctx);
 
-        let commander = target.commander(
-            EnvironmentDescriptor::new().add_uniform(EnvironmentUniform {
-                binding_slot: 0,
-                visibilty: ShaderStage::Vertex,
-                uniform: UniformValue::Mat4(camera.projection()),
-            }),
-        );
+        let environment = BindGroup::new().with_entry(BindGroupEntry::Uniform {
+            binding_slot: 0,
+            visibility: ShaderStage::Vertex,
+            value: UniformValue::Mat4(camera.projection()),
+        });
+        let commander = target.commander(environment);
 
         // ── Three-way timing: draw loop / end_scene / total ──────────────
         let total_start = Instant::now();
 
         let mut renderer = Render2D::begin_scene(commander);
         // Pre-allocate instance vectors to avoid reallocation churn.
-        // Estimate: quads / (3 materials × 3 z-layers) ≈ quads / 9 per group.
+        // Estimate: sprites / (3 materials × 3 z-layers) ≈ sprites / 9 per group.
         renderer.reserve(self.quad_count / 9);
 
         let draw_start = Instant::now();
         let count = self.quad_count;
-        let cache = &self.quad_cache;
+        let cache = &self.sprite_cache;
         for i in 0..count {
-            renderer.draw(cache[i]);
+            renderer.draw(cache[i].clone());
         }
         let draw_elapsed = draw_start.elapsed();
 
@@ -457,7 +442,7 @@ pub fn run() -> EngineResult<()> {
 
     println!("=== Nova Engine — 2D Stress Test ===");
     println!(
-        "Starting with {} quads, auto-ramping to find the FPS cliff.",
+        "Starting with {} sprites, auto-ramping to find the FPS cliff.",
         INITIAL_QUAD_COUNT
     );
     println!(

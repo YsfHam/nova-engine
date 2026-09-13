@@ -1,33 +1,25 @@
-use nova_core::{assets::defaults::CoreDefaultAssets, graphics::{material::{Material, MaterialTemplate}, sampler::Sampler, shader::Shader}, plugin::Plugin};
+use nova_core::plugin::Plugin;
 
-use crate::{batcher::set_quad_geometry, defaults::pixelated_sampler};
-use crate::defaults::{Nova2dDefaults, default_material, default_material_template, default_shader};
-use crate::vertex::BaseVertex2D;
+use crate::{batcher::set_quad_geometry, defaults::{default_color_material, default_sprite_material, default_white_texture, Nova2dDefaults}, materials::{ColorMaterial, SpriteMaterial}, vertex::BaseVertex2D};
 
 pub struct Nova2DPlugin;
 
 impl Plugin for Nova2DPlugin {
     fn init(&self, ctx: &mut nova_core::app::ApplicationContext) -> nova_core::EngineResult<()> {
-        let shader = ctx.assets_manager.load::<Shader>(default_shader())?;
-        let template = ctx
-            .assets_manager
-            .load::<MaterialTemplate>(
-                default_material_template(shader)
-            )?;
-        let white_texture = ctx.default_assets.expect(CoreDefaultAssets::WhiteTexture);
-        
-        let material = ctx.assets_manager.load::<Material>(default_material(template, white_texture))?;
+        // Register material types so the renderer can resolve them at draw time.
+        ctx.render_ctx.register_material::<ColorMaterial>();
+        ctx.render_ctx.register_material::<SpriteMaterial>();
 
-        let sampler = ctx.assets_manager.load::<Sampler>(pixelated_sampler())?;
-        
-        ctx.default_assets.insert(Nova2dDefaults::TexturedQuadShader, shader)?;
-        ctx.default_assets.insert(Nova2dDefaults::TexturedQuadMaterialTemplate, template)?;
-        ctx.default_assets.insert(Nova2dDefaults::WhiteTextureMaterial, material)?;
-        ctx.default_assets.insert(Nova2dDefaults::PixelatedSampler, sampler)?;
+        // Create and insert default assets.
+        let white_texture = ctx.assets_manager.insert_asset(default_white_texture());
+        let color_material = ctx.assets_manager.insert_asset(default_color_material());
+        let sprite_material = ctx.assets_manager.insert_asset(default_sprite_material(white_texture));
+
+        ctx.default_assets.insert(Nova2dDefaults::WhiteTexture, white_texture)?;
+        ctx.default_assets.insert(Nova2dDefaults::DefaultColorMaterial, color_material)?;
+        ctx.default_assets.insert(Nova2dDefaults::DefaultSpriteMaterial, sprite_material)?;
 
         // Register the shared base quad geometry (4 vertices + 6 indices).
-        // This is uploaded once to the persistent geometry buffer and reused
-        // by all instanced quad batches — zero per-frame vertex upload.
         let base_vertices: [BaseVertex2D; 4] = [
             BaseVertex2D { position: [-0.5, -0.5] }, // TL
             BaseVertex2D { position: [-0.5,  0.5] }, // BL
@@ -40,7 +32,6 @@ impl Plugin for Nova2DPlugin {
             &base_indices,
         );
 
-        // Set the global quad geometry reference so Batcher2D can use it.
         set_quad_geometry(geo_ref);
 
         Ok(())

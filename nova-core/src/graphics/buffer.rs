@@ -1,9 +1,10 @@
 use std::num::NonZeroU64;
 
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BufferLayout {
-    attributes: Vec<wgpu::VertexAttribute>,
+    formats: Vec<VertexFormat>,
+    location_offset: u32,
     stride: u64,
     step_mode: BufferStepMode,
 }
@@ -31,7 +32,7 @@ impl InstanceBufferLayout {
 
 /// Whether a [`BufferLayout`] describes per-vertex data or per-instance data.
 /// Mirrors `wgpu::VertexStepMode`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BufferStepMode {
     /// The buffer is advanced per vertex (the usual vertex buffer).
     Vertex,
@@ -51,7 +52,7 @@ impl From<BufferStepMode> for wgpu::VertexStepMode {
 /// Engine-native vertex attribute format. A serializable mirror of the
 /// subset of `wgpu::VertexFormat` we expose. Translate to `wgpu` via the
 /// `From` impl below.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VertexFormat {
     Float32,
     Float32x2,
@@ -100,24 +101,12 @@ impl BufferLayout {
     /// list of attribute formats. Each attribute is assigned a sequential
     /// `shader_location` (0, 1, 2, ...), and the stride is the sum of the
     /// attribute sizes.
-    fn new(attributes_formats: &[VertexFormat], step_mode: BufferStepMode, location_offset: u32) -> Self {
-        let mut offset = 0;
-        let mut shader_location = location_offset;
-        let mut attributes = vec![];
-
-        for format in attributes_formats {
-            attributes.push(wgpu::VertexAttribute {
-                format: (*format).into(),
-                offset,
-                shader_location,
-            });
-            shader_location += 1;
-            offset += format.size()
-        }
-
+    fn new(formats: &[VertexFormat], step_mode: BufferStepMode, location_offset: u32) -> Self {
+        let stride = formats.iter().map(|f| f.size()).sum();
         Self {
-            attributes,
-            stride: offset,
+            formats: formats.to_vec(),
+            location_offset,
+            stride,
             step_mode,
         }
     }
@@ -126,7 +115,7 @@ impl BufferLayout {
     /// (`new(&[])`) means the pipeline has no vertex buffer — vertex data is
     /// generated in the shader (e.g. via `vertex_index`).
     pub fn is_empty(&self) -> bool {
-        self.attributes.is_empty()
+        self.formats.is_empty()
     }
 
     /// The byte stride between consecutive elements (vertices or instances)
@@ -139,22 +128,28 @@ impl BufferLayout {
     pub fn step_mode(&self) -> BufferStepMode {
         self.step_mode
     }
+
+    pub fn formats(&self) -> &[VertexFormat] {
+        &self.formats
+    }
 }
 
-impl<'a> TryInto<wgpu::VertexBufferLayout<'a>> for &'a BufferLayout {
-    type Error = ();
-
-    fn try_into(self) -> Result<wgpu::VertexBufferLayout<'a>, Self::Error> {
-        if self.is_empty() {
-            Err(())
-        }
-        else {
-            Ok(wgpu::VertexBufferLayout {
-                array_stride: self.stride,
-                step_mode: self.step_mode.into(),
-                attributes: &self.attributes
-            })
-        }
+impl BufferLayout {
+    /// Produces owned `wgpu::VertexAttribute`s for this layout. The caller
+    /// must hold the Vec alive while the `wgpu::VertexBufferLayout` borrows it.
+    pub fn wgpu_attributes(&self) -> Vec<wgpu::VertexAttribute> {
+        let mut offset = 0u64;
+        let mut shader_location = self.location_offset;
+        self.formats.iter().map(|format| {
+            let attr = wgpu::VertexAttribute {
+                format: (*format).into(),
+                offset,
+                shader_location,
+            };
+            shader_location += 1;
+            offset += format.size();
+            attr
+        }).collect()
     }
 }
 
@@ -224,10 +219,6 @@ impl DynamicBuffer {
 
     pub(crate) fn buffer(&self) -> &wgpu::Buffer {
         &self.buffer
-    }
-
-    pub(crate) fn length(&self) -> u64 {
-        self.length
     }
 
     fn create_buffer(device: &wgpu::Device, label: &str, initial_size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {

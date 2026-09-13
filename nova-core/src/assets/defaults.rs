@@ -36,7 +36,7 @@ impl DefaultAssets {
 
     pub fn get<A: Asset>(&self, key: impl DefaultAssetsKey) -> Option<Handle<A>> {
         let generic_handle = self.assets.get(&key.key())?;
-        (*generic_handle).try_into().ok()
+        (*generic_handle).try_into_handle::<A>().ok()
     }
 
     pub fn expect<A: Asset>(&self, key: impl DefaultAssetsKey) -> Handle<A> {
@@ -56,7 +56,6 @@ pub trait DefaultAssetsKey: 'static {
 }
 
 pub enum CoreDefaultAssets {
-    DefaultSampler,
     WhiteTexture,
 }
 
@@ -64,7 +63,6 @@ impl DefaultAssetsKey for CoreDefaultAssets {
 
     fn as_str(&self) -> &'static str {
         match self {
-            CoreDefaultAssets::DefaultSampler => "DefaultSampler",
             CoreDefaultAssets::WhiteTexture => "WhiteTexture",
         }
     }

@@ -1,4 +1,4 @@
-use crate::{EngineResult, app::ApplicationContext, assets::defaults::CoreDefaultAssets, graphics::{sampler::{Sampler, SamplerMetadata}, texture::{Texture, TextureMetadata, TextureSize}}};
+use crate::{EngineResult, app::ApplicationContext, assets::defaults::CoreDefaultAssets, graphics::{texture::{Texture, TextureConfig, TextureSize}}};
 
 pub trait Plugin: 'static {
     fn init(&self, ctx: &mut ApplicationContext) -> EngineResult<()>;
@@ -39,15 +39,14 @@ impl Plugin for CorePlugin {
         let default_assets = &mut ctx.default_assets;
         let assets_manager = &mut ctx.assets_manager;
 
-        let sampler = assets_manager.load::<Sampler>(SamplerMetadata::default())?;
-        default_assets.insert(CoreDefaultAssets::DefaultSampler, sampler)?;
-
-        let texture = assets_manager.load::<Texture>(TextureMetadata::from_raw(
-            "White texture",
+        let texture = assets_manager.insert_asset(Texture::from_raw(
             vec![0xFF, 0xFF, 0xFF, 0xFF],
             TextureSize::new_texture2d(1, 1),
-            sampler
-        ))?;
+            TextureConfig {
+                label: "White texture".to_string(),
+                ..TextureConfig::default()
+            },
+        ));
 
         default_assets.insert(CoreDefaultAssets::WhiteTexture, texture)?;
 

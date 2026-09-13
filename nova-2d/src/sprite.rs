@@ -1,29 +1,32 @@
-use nova_core::{assets::handle::Handle, graphics::{color::Color, material::Material}, math::{Angle, Vec2, vec2}};
+use nova_core::{assets::handle::GenericHandle, graphics::color::Color, math::{Angle, Mat3, Vec2, vec2}};
 
-use crate::{quad::Quad, utils::RectF32};
+use crate::utils::RectF32;
 
-/// A sprite: a quad with a pre-computed UV rect from a [`SpriteAtlas`].
-///
-/// Like [`Quad`], it holds a `Handle<Material>` (which binds the atlas texture)
-/// and per-instance data (position, scale, color, z-index, UV rect). Convert
-/// to `Quad` via [`Sprite::to_quad`] and draw via [`Render2D::draw_quad`].
+/// A sprite: a quad with a material reference and per-instance data
+/// (position, scale, color, z-index, UV rect).
+#[derive(Clone, Copy)]
 pub struct Sprite {
     pub position: Vec2,
     pub angle: Angle,
     pub scale: Vec2,
-    pub material: Handle<Material>,
+    pub material: GenericHandle,
     pub color: Color,
     pub z_index: u32,
     pub uv: RectF32,
 }
 
 impl Sprite {
-    pub fn new(material: Handle<Material>, uv: RectF32) -> Self {
+    pub fn new(material: GenericHandle) -> Self {
         Self {
             material,
             color: Color::WHITE,
             z_index: 0,
-            uv,
+            uv: RectF32 {
+                top: 0.0,
+                left: 0.0,
+                bottom: 1.0,
+                right: 1.0,
+            },
             position: Vec2::ZERO,
             angle: Angle::ZERO,
             scale: vec2(1.0, 1.0),
@@ -55,29 +58,26 @@ impl Sprite {
         self
     }
 
-}
+    pub fn with_uv(mut self, uv: RectF32) -> Self {
+        self.uv = uv;
+        self
+    }
 
-
-impl Into<Quad> for Sprite {
-    fn into(self) -> Quad {
-        Quad {
-            position: self.position,
-            angle: self.angle,
-            scale: self.scale,
-            material: self.material,
-            color: self.color,
-            z_index: self.z_index,
-            uv: self.uv,
-        }
+    pub fn transform(&self) -> Mat3 {
+        Mat3::from_scale_angle_translation(
+            self.scale,
+            self.angle.into(),
+            self.position,
+        )
     }
 }
 
 /// A grid-based sprite atlas: a texture divided into fixed-size cells.
 ///
-/// All sprites share one [`Handle<Material>`] (which binds the atlas texture).
+/// All sprites share one [`GenericHandle`] (which binds the atlas texture).
 /// Sprites are indexed by `u32` — row-major order (left-to-right, top-to-bottom).
 pub struct SpriteAtlas {
-    material: Handle<Material>,
+    material: GenericHandle,
     /// Number of columns/rows in the grid (atlas_size / sprite_size).
     grid: Vec2,
     /// Pixel size of each cell. Used to compute UVs in pixel space first,
@@ -93,7 +93,7 @@ impl SpriteAtlas {
     ///
     /// `atlas_size` is the texture dimensions in pixels. `sprite_size` is
     /// the dimensions of each cell in pixels. The atlas must divide evenly.
-    pub fn new(material: Handle<Material>, atlas_size: Vec2, sprite_size: Vec2) -> Self {
+    pub fn new(material: GenericHandle, atlas_size: Vec2, sprite_size: Vec2) -> Self {
         let grid = atlas_size / sprite_size;
         Self {
             material,
@@ -127,11 +127,8 @@ impl SpriteAtlas {
         let top = px_top / self.atlas_size.y;
         let right = px_right / self.atlas_size.x;
         let bottom = px_bottom / self.atlas_size.y;
-        
-        Some(Sprite::new(
-            self.material,
-            RectF32 { top, left, bottom, right },
-        ))
+
+        Some(Sprite::new(self.material).with_uv(RectF32 { top, left, bottom, right }))
     }
 
     /// Returns the sprite at the given grid coordinates (col, row).

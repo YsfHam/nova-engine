@@ -1,21 +1,89 @@
-use std::collections::HashMap;
+use std::{any::TypeId, collections::HashMap};
 
-use crate::{assets::{handle::Handle, resolve::ResolvedMaterialTemplate}, graphics::material::MaterialTemplate  };
+use crate::{
+    assets::AssetsManager,
+    graphics::{
+        material::{BindGroupLayout, MaterialTemplate},
+        shader::Shader,
+    },
+};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+// ──────────────────────────────────────────────────────────────────────────
+//  MaterialRegistry — TypeId-keyed registry of material types.
+//
+//  Each registered material type provides:
+//  - Its `MaterialTemplate` (returned by `Material::template()`).
+//  - A `template_hash` (for pipeline cache keys).
+//  - A type-erased `resolve` function that, given a `GenericHandle` + the
+//    `AssetsManager`, returns `&dyn AsBindGroup` (by downcasting the asset).
+//
+//  The registry is populated by calling `register::<M>()` for each material
+//  type the engine knows about.
+// ──────────────────────────────────────────────────────────────────────────
+
+pub(crate) struct MaterialRegistration {
+    pub template: MaterialTemplate,
+    /// Type-erased adapter: given a GenericHandle + &AssetsManager, returns
+    /// &dyn AsBindGroup (borrows the asset from the manager).
+    pub resolve: fn(crate::assets::handle::GenericHandle, &AssetsManager) -> Option<&dyn crate::graphics::material::AsBindGroup>,
+}
+
+pub(crate) struct MaterialRegistry {
+    registrations: HashMap<TypeId, MaterialRegistration>,
+}
+
+impl MaterialRegistry {
+    pub(crate) fn new() -> Self {
+        Self {
+            registrations: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn register<M: crate::graphics::material::Material>(&mut self) {
+        let template = M::template();
+        self.registrations.insert(
+            TypeId::of::<M>(),
+            MaterialRegistration {
+                template,
+                resolve: |handle, assets| {
+                    let any = assets.get_asset_any(handle)?;
+                    any.downcast_ref::<M>()
+                        .map(|m| m as &dyn crate::graphics::material::AsBindGroup)
+                },
+            },
+        );
+    }
+
+    pub(crate) fn get(&self, type_id: &TypeId) -> Option<&MaterialRegistration> {
+        self.registrations.get(type_id)
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+//  Pipeline cache — keyed by template_hash + target_format + layout hashes.
+// ──────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PipelineCacheKey {
-    material_template_handle: Handle<MaterialTemplate>,
+    template: MaterialTemplate,
     target_format: wgpu::TextureFormat,
+    scene_layout: BindGroupLayout,
+    material_layout: BindGroupLayout,
 }
 
-pub struct PipelineDescriptor<'a> {
-    pub material_template: ResolvedMaterialTemplate<'a>,
-    pub scene_bind_group_layout: &'a wgpu::BindGroupLayout,
+/// Bundles all inputs needed to compile (or look up) a pipeline, so
+/// `get_or_compile` takes a single argument instead of nine.
+pub(crate) struct PipelineCompileRequest<'a> {
+    pub device: &'a wgpu::Device,
+    pub shader: &'a Shader,
+    pub template: &'a MaterialTemplate,
+    pub scene_layout: &'a wgpu::BindGroupLayout,
+    pub material_layout: Option<&'a wgpu::BindGroupLayout>,
     pub target_format: wgpu::TextureFormat,
+    pub scene_layout_native: BindGroupLayout,
+    pub material_layout_native: BindGroupLayout,
 }
 
-
-#[derive(Clone)]
 pub struct Pipeline {
     pub pipeline: wgpu::RenderPipeline,
     pub bind_group_layout: Option<wgpu::BindGroupLayout>,
@@ -32,77 +100,99 @@ impl PipelineCache {
         }
     }
 
-    pub fn get_or_compile(&mut self, device: &wgpu::Device, desc: PipelineDescriptor<'_>) -> &Pipeline {
-
+    /// Returns the existing pipeline for this key, or compiles a new one.
+    pub(crate) fn get_or_compile(&mut self, req: PipelineCompileRequest<'_>) -> &Pipeline {
         let key = PipelineCacheKey {
-            material_template_handle: desc.material_template.handle,
-            target_format: desc.target_format,
+            template: req.template.clone(),
+            target_format: req.target_format,
+            scene_layout: req.scene_layout_native.clone(),
+            material_layout: req.material_layout_native.clone(),
         };
 
-        self.cache.entry(key)
-        .or_insert_with_key(|key| Self::compile_pipeline(device, key, desc) )
+        self.cache
+            .entry(key)
+            .or_insert_with(|| {
+                Self::compile_pipeline(
+                    req.device,
+                    req.shader,
+                    req.template,
+                    req.scene_layout,
+                    req.material_layout,
+                    req.target_format,
+                )
+            })
     }
 
-    fn compile_pipeline(device: &wgpu::Device, key: &PipelineCacheKey, desc: PipelineDescriptor<'_>) -> Pipeline  {
+    fn compile_pipeline(
+        device: &wgpu::Device,
+        shader: &Shader,
+        template: &MaterialTemplate,
+        scene_layout: &wgpu::BindGroupLayout,
+        material_layout: Option<&wgpu::BindGroupLayout>,
+        target_format: wgpu::TextureFormat,
+    ) -> Pipeline {
+        let vertex_attrs = template.buffer_layout.wgpu_attributes();
+        let instance_attrs = template.instance_layout.as_ref().map(|l| l.wgpu_attributes());
 
-        let bind_group_layout = Self::create_bind_group_layout(device, &desc.material_template);
+        let vertex_wbl = if !template.buffer_layout.is_empty() {
+            Some(wgpu::VertexBufferLayout {
+                array_stride: template.buffer_layout.stride(),
+                step_mode: template.buffer_layout.step_mode().into(),
+                attributes: &vertex_attrs,
+            })
+        } else { None };
 
-        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Render pipeline layout"),
-            bind_group_layouts: &[
-                Some(desc.scene_bind_group_layout),
-                bind_group_layout.as_ref()
-            ],
-            immediate_size: 0,
-        });
-
-        let template = desc.material_template;
-
-        // Vertex buffer layouts: include the template's layout only when it
-        // declares attributes. An empty layout (shader-generated vertices via
-        // `vertex_index`) must be omitted, otherwise wgpu requires a vertex
-        // buffer to be bound at draw time.
-        // When an instance layout is present, it's declared as a second vertex
-        // buffer at slot 1 (step mode Instance).
-        let vbl = template.material_template.buffer_layout();
-        let il = template.material_template.instance_layout();
-
-        // Build the buffers slice. The vertex layout goes first; if the
-        // instance layout exists and is non-empty, it's appended.
-        // wgpu expects &[Option<VertexBufferLayout>] — each entry is Some
-        // (declares a buffer) or None (no buffer at that slot).
-        let vertex_wbl: Option<wgpu::VertexBufferLayout> = vbl.try_into().ok();
-        let instance_wbl: Option<wgpu::VertexBufferLayout> = il.and_then(|l| l.try_into().ok());
+        let instance_wbl = if let Some(ref attrs) = instance_attrs {
+            let il = template.instance_layout.as_ref().unwrap();
+            Some(wgpu::VertexBufferLayout {
+                array_stride: il.stride(),
+                step_mode: il.step_mode().into(),
+                attributes: attrs,
+            })
+        } else { None };
 
         let buffers: Vec<Option<wgpu::VertexBufferLayout>> = match (&vertex_wbl, &instance_wbl) {
             (Some(v), Some(i)) => vec![Some(v.clone()), Some(i.clone())],
             (Some(v), None) => vec![Some(v.clone())],
-            (None, Some(i)) => vec![None, Some(i.clone())], // slot 0 empty, slot 1 = instance
+            (None, Some(i)) => vec![None, Some(i.clone())],
             (None, None) => vec![],
         };
 
+        let vertex_shader = crate::graphics::shader::VertexShader::try_from(shader)
+            .expect("Material template requires a vertex shader but the shader module has no vertex entry point");
+        let fragment_shader = crate::graphics::shader::FragmentShader::try_from(shader).ok();
+
         let vertex = wgpu::VertexState {
-            module: template.vertex_shader.module(),
-            entry_point: Some(template.vertex_shader.entry_point()),
+            module: vertex_shader.module(),
+            entry_point: Some(vertex_shader.entry_point()),
             buffers: &buffers,
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         };
 
-        let fragment = match &template.fragment_shader {
+        let fragment = match &fragment_shader {
             Some(fs) => Some(wgpu::FragmentState {
                 module: fs.module(),
                 entry_point: Some(fs.entry_point()),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: key.target_format,
-                    blend: template.material_template.blend_state().into(),
+                    format: target_format,
+                    blend: template.blend_state.into(),
                     write_mask: wgpu::ColorWrites::ALL,
-                })]
+                })],
             }),
-
-            None => None
+            None => None,
         };
 
+        let bind_group_layouts: Vec<Option<&wgpu::BindGroupLayout>> = match material_layout {
+            Some(ml) => vec![Some(scene_layout), Some(ml)],
+            None => vec![Some(scene_layout), None],
+        };
+
+        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render pipeline layout"),
+            bind_group_layouts: &bind_group_layouts,
+            immediate_size: 0,
+        });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
@@ -110,7 +200,7 @@ impl PipelineCache {
             vertex,
             fragment,
             primitive: wgpu::PrimitiveState {
-                topology: template.material_template.topology().into(),
+                topology: template.topology.into(),
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
@@ -118,7 +208,7 @@ impl PipelineCache {
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: template.material_template.depth_stencil().map(Into::into),
+            depth_stencil: template.depth_stencil.as_ref().map(Into::into),
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,
@@ -130,66 +220,7 @@ impl PipelineCache {
 
         Pipeline {
             pipeline,
-            bind_group_layout,
+            bind_group_layout: material_layout.map(|l| l.clone()),
         }
-    }
-
-    fn create_bind_group_layout(device: &wgpu::Device, template: &ResolvedMaterialTemplate<'_>) -> Option<wgpu::BindGroupLayout> {
-        let uniform_bindings = template.material_template.uniform_layout();
-
-        let uniform_bindings_entries = uniform_bindings.iter()
-            .map(|uniform_binding| wgpu::BindGroupLayoutEntry {
-                binding: uniform_binding.binding_slot,
-                visibility: uniform_binding.visibility.into(),
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            });
-
-        let texture_bindings = template.material_template.texture_layout();
-        let texture_bindings_entries = 
-            texture_bindings
-            .iter()
-            .flat_map(|texture_binding| {
-                [
-                    wgpu::BindGroupLayoutEntry {
-                        binding: texture_binding.texture_binding_slot,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: texture_binding.is_filterable() },
-                            view_dimension: texture_binding.view_dimension.into(),
-                            multisampled: texture_binding.multisampled,
-                        },
-                        count: None,
-                    },
-
-                    wgpu::BindGroupLayoutEntry {
-                        binding: texture_binding.sample_binding_slot,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(texture_binding.sampler_binding_type.into()),
-                        count: None,
-                    }
-                ]
-            });
-
-
-        let entries = 
-            uniform_bindings_entries.chain(texture_bindings_entries) 
-            .collect::<Vec<_>>();      
-
-        if entries.is_empty() {
-            return None;
-        }
-        
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Uniforms bind group layout"),
-            entries: &entries,
-        });
-
-        Some(layout)
-        
     }
 }

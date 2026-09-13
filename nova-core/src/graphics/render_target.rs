@@ -1,18 +1,8 @@
-use std::cell::RefMut;
+use std::{any::TypeId, cell::RefMut};
 
 use crate::{
-    assets::{resolve::ResolvedMaterial, AssetsManager},
-    graphics::{
-        bind::BindGroupAllocator,
-        buffer::{Offset, StagingBufferPool},
-        draw_batch::DrawBatch,
-        geometry::GeometryPool,
-        environment::EnvironmentDescriptor,
-        pipeline::{PipelineCache, PipelineDescriptor},
-        render::RenderContext,
-        render_pass::{IndexFormat, RenderPass, RenderPassDescriptor},
-        texture::TextureFormat,
-        uniform::{MaterialUniformEntry, UniformArena},
+    assets::AssetsManager, graphics::{
+        buffer::{Offset, StagingBufferPool}, draw_batch::DrawBatch, geometry::GeometryPool, material::{BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry}, pipeline::{MaterialRegistration, PipelineCache}, render::{RenderCache, RenderContext}, render_pass::{IndexFormat, RenderPass, RenderPassDescriptor}, texture::TextureFormat, uniform::UniformBuffer,
     },
 };
 
@@ -32,21 +22,15 @@ use crate::{
 /// [`RenderTargetCommander`] can return references whose lifetime is tied to
 /// the `RenderTarget` borrow — no nested `RefCell` borrows are needed.
 pub struct RenderTarget<'a> {
-    /// The mutable borrow of `RenderContext`, held for the target's lifetime.
-    /// Gives direct field access (device, pipeline_cache, bind_group_allocator).
     render_ctx: RefMut<'a, RenderContext>,
     pub(crate) view: &'a wgpu::TextureView,
     pub(crate) encoder: Option<wgpu::CommandEncoder>,
-    uniform_arena: UniformArena,
+    uniform_buffer: UniformBuffer,
     scene_bind_group_layout: Option<wgpu::BindGroupLayout>,
+    scene_bind_group_layout_native: BindGroupLayout,
 }
 
 impl<'a> RenderTarget<'a> {
-    /// Creates a render target rendering into `view`, holding a mutable borrow
-    /// of the `RenderContext` (via the `RefMut` guard from `render_ctx_ref`).
-    ///
-    /// The caller passes a `RefMut<RenderContext>` obtained from
-    /// [`RenderContextRef::get_mut`](crate::graphics::render::RenderContextRef::get_mut).
     pub fn new(render_ctx: RefMut<'a, RenderContext>, view: &'a wgpu::TextureView) -> Self {
         let encoder = render_ctx.device().create_command_encoder(
             &wgpu::CommandEncoderDescriptor {
@@ -58,57 +42,78 @@ impl<'a> RenderTarget<'a> {
             render_ctx,
             view,
             encoder: Some(encoder),
-            uniform_arena: UniformArena::new(),
+            uniform_buffer: UniformBuffer::new(),
             scene_bind_group_layout: None,
+            scene_bind_group_layout_native: BindGroupLayout::new(),
         }
     }
 
     /// Creates a `RenderTargetCommander` bound to this target, configured with
-    /// the given environment (scene uniforms). The commander borrows the
-    /// target's fields and records all draw commands.
-    pub fn commander(&mut self, environment: EnvironmentDescriptor) -> RenderTargetCommander<'_> {
+    /// the given environment (a `BindGroup` of scene uniforms). The commander
+    /// borrows the target's fields and records all draw commands.
+    pub fn commander(&mut self, environment: BindGroup) -> RenderTargetCommander<'_> {
         self.set_environment(environment);
 
-        // Deref the RefMut guard to get &mut RenderContext, then borrow its
-        // disjoint fields individually. The guard stays alive on self.
         let render_ctx: &mut RenderContext = &mut self.render_ctx;
         RenderTargetCommander {
-            device: &render_ctx.gfx.device,
             surface_format: render_ctx.surface_format(),
-            pipeline_cache: &mut render_ctx.pipeline_cache,
-            bind_group_allocator: &mut render_ctx.bind_group_allocator,
+            gpu: GpuResources {
+                device: &render_ctx.gfx.device,
+                queue: &render_ctx.gfx.queue,
+                staging_buffer: &mut render_ctx.staging_buffer_pool,
+                geometry_pool: &render_ctx.geometry_pool,
+                pipeline_cache: &mut render_ctx.pipeline_cache,
+                render_cache: &mut render_ctx.render_cache,
+            },
+            material_registry: &render_ctx.material_registry,
             scene_bind_group_layout: self.scene_bind_group_layout.as_ref().unwrap(),
-            uniform_arena: &mut self.uniform_arena,
+            scene_bind_group_layout_native: self.scene_bind_group_layout_native.clone(),
+            uniform_buffer: &mut self.uniform_buffer,
             encoder: self.encoder.as_mut().expect("Encoder must be Some"),
             view: self.view,
-            staging_buffer: &mut render_ctx.staging_buffer_pool,
-            geometry_pool: &render_ctx.geometry_pool,
-            queue: &render_ctx.gfx.queue
         }
     }
 
-    fn set_environment(&mut self, environment: EnvironmentDescriptor) {
-        let mut entries = vec![];
-        for uniform in environment.uniforms() {
-            let entry = wgpu::BindGroupLayoutEntry {
-                binding: uniform.binding_slot,
-                visibility: uniform.visibilty.into(),
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            };
+    fn set_environment(&mut self, environment: BindGroup) {
+        // Build the scene bind group layout from the environment's entries.
+        // We convert the runtime BindGroup entries into a BindGroupLayout
+        // (type-only, no values) and create the wgpu layout from it.
+        let mut layout = BindGroupLayout::new();
+        for entry in &environment.entries {
+            match entry {
+                BindGroupEntry::Uniform { binding_slot, visibility, value } => {
+                    layout = layout.with_entry(BindGroupLayoutEntry::Uniform {
+                        binding_slot: *binding_slot,
+                        visibility: *visibility,
+                        ty: value.ty(),
+                    });
 
-            self.uniform_arena.upload(uniform.binding_slot, uniform.uniform);
-            entries.push(entry);
+                    self.uniform_buffer.upload(*binding_slot, *value);
+                }
+                BindGroupEntry::Texture { binding_slot, sampler_binding_slot, visibility, view_dimension, sample_type, .. } => {
+                    layout = layout.with_entry(BindGroupLayoutEntry::Texture {
+                        binding_slot: *binding_slot,
+                        sampler_binding_slot: *sampler_binding_slot,
+                        visibility: *visibility,
+                        view_dimension: *view_dimension,
+                        sample_type: *sample_type,
+                    });
+                }
+            }
         }
 
-        self.scene_bind_group_layout = Some(self.render_ctx.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Scene bind group layout"),
-            entries: &entries
-        }));
+        // Store the engine-native layout for use as a pipeline cache key.
+        self.scene_bind_group_layout_native = layout.clone();
+
+        self.scene_bind_group_layout = layout.create_layout(self.render_ctx.device(), "Scene bind group layout");
+        // If the environment has no entries, create an empty layout so the
+        // pipeline can still bind group 0.
+        if self.scene_bind_group_layout.is_none() {
+            self.scene_bind_group_layout = Some(self.render_ctx.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Scene bind group layout (empty)"),
+                entries: &[],
+            }));
+        }
     }
 
     /// Finishes the command encoder and submits it to the GPU queue.
@@ -200,6 +205,29 @@ impl TextureRenderTarget {
 }
 
 
+/// Bundles GPU resources needed by render pass helper functions.
+/// Avoids passing many separate arguments to each phase function.
+pub(crate) struct GpuResources<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub staging_buffer: &'a mut StagingBufferPool,
+    pub geometry_pool: &'a GeometryPool,
+    pub pipeline_cache: &'a mut PipelineCache,
+    pub render_cache: &'a mut RenderCache,
+}
+
+/// Bundles the immutable pass-level context (descriptor, scene bind group,
+/// target format, and target view) so `record_pass` doesn't exceed the
+/// clippy argument threshold.
+pub(crate) struct PassContext<'a> {
+    pub pass_descriptor: RenderPassDescriptor,
+    pub scene_bind_group: wgpu::BindGroup,
+    pub scene_bind_group_layout: &'a wgpu::BindGroupLayout,
+    pub scene_layout_native: BindGroupLayout,
+    pub target_format: wgpu::TextureFormat,
+    pub view: &'a wgpu::TextureView,
+}
+
 /// A command-recording scope bound to a [`RenderTarget`]. Created via
 /// [`RenderTarget::commander`], it borrows the target's encoder, uniform
 /// arena, and the `RenderContext`'s split-borrowed fields (device,
@@ -211,24 +239,21 @@ impl TextureRenderTarget {
 /// plain `&`/`&mut` — no nested `RefCell` borrows, and disjoint fields
 /// (pipeline_cache vs bind_group_allocator vs encoder) coexist freely.
 pub struct RenderTargetCommander<'a> {
-    device: &'a wgpu::Device,
     surface_format: wgpu::TextureFormat,
-    pipeline_cache: &'a mut PipelineCache,
-    bind_group_allocator: &'a mut BindGroupAllocator,
+    gpu: GpuResources<'a>,
+    material_registry: &'a crate::graphics::pipeline::MaterialRegistry,
     scene_bind_group_layout: &'a wgpu::BindGroupLayout,
-    uniform_arena: &'a mut UniformArena,
+    scene_bind_group_layout_native: BindGroupLayout,
+    uniform_buffer: &'a mut UniformBuffer,
     encoder: &'a mut wgpu::CommandEncoder,
     view: &'a wgpu::TextureView,
-    staging_buffer: &'a mut StagingBufferPool,
-    geometry_pool: &'a GeometryPool,
-    queue: &'a wgpu::Queue,
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-//  PreparedBatch — the single struct produced by consuming the batch
-//  iterator once. Contains the original batch (for geometry), the resolved
-//  material, and the staging offsets (which may point into the dynamic
-//  staging buffer or the persistent shared geometry buffer).
+//  PreparedBatch — produced by consuming the batch iterator once.
+//  Contains the original batch (for geometry), the material registration
+//  (template + hash), the owned BindGroup (from as_bind_group()), and
+//  staging offsets.
 // ──────────────────────────────────────────────────────────────────────────
 
 /// Which GPU buffer an offset points into.
@@ -240,34 +265,14 @@ enum BufferSource {
     Shared(Offset),
 }
 
-/// A batch that has been fully resolved: material resolved, geometry uploaded
-/// (or looked up from the shared pool), and offsets recorded.
+/// A batch that has been fully resolved: geometry uploaded (or looked up from
+/// the shared pool), material registration looked up, and bind group created.
 struct PreparedBatch<'a> {
     batch: DrawBatch,
-    resolved: ResolvedMaterial<'a>,
+    registration: &'a MaterialRegistration,
+    bind_group: BindGroup,
     staging_offsets: BatchStagingBufferOffsets,
 }
-
-impl<'a> PreparedBatch<'a> {
-
-    /// Builds a `MaterialUniformEntry` from this prepared batch's resolved
-    /// material. Cheap — all fields are references.
-    fn uniform_entry(&self) -> MaterialUniformEntry<'a> {
-        MaterialUniformEntry {
-            handle: self.batch.material,
-            material: self.resolved.material,
-            template: self.resolved.material_template.material_template,
-        }
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-//  submit_batches — the main entry point. Delegates each phase to a
-//  dedicated function. The batch iterator is consumed exactly once (in
-//  `prepare_batches`). All downstream phases borrow the resulting
-//  `Vec<PreparedBatch>` and use iterator combinators — no additional
-//  heap allocations beyond the single Vec.
-// ──────────────────────────────────────────────────────────────────────────
 
 impl<'a> RenderTargetCommander<'a> {
     pub fn submit_batches<I>(
@@ -279,112 +284,77 @@ impl<'a> RenderTargetCommander<'a> {
     where
         I: IntoIterator<Item = DrawBatch>,
     {
-        // Destructure self into individual field references. This lets each
-        // phase function borrow only the fields it needs, and avoids the
-        // "borrow self mutably twice" problem. The `prepared` Vec borrows
-        // `assets` (via ResolvedMaterial), not `self` — so it can coexist
-        // with mutable field access.
         let Self {
-            device,
             surface_format,
-            pipeline_cache,
-            bind_group_allocator,
+            mut gpu,
+            material_registry,
             scene_bind_group_layout,
-            uniform_arena,
+            scene_bind_group_layout_native,
+            uniform_buffer,
             encoder,
             view,
-            staging_buffer,
-            geometry_pool,
-            queue,
         } = self;
 
         // Phase 1: scene bind group (group 0).
-        let scene_bind_group = uniform_arena
-            .build_bind_group(device, scene_bind_group_layout)
+        let scene_bind_group = uniform_buffer
+            .build_bind_group(gpu.device, scene_bind_group_layout)
             .expect("scene uniforms uploaded");
 
-        // Phase 2: detect removed materials.
-        let needs_rebuild = bind_group_allocator.detect_removed(assets);
-
-        // Phase 3: consume the iterator once — resolve materials, upload
-        // geometry (owned → dynamic staging; shared → look up permanent
-        // offsets from the geometry pool). Produces a single Vec<PreparedBatch>.
+        // Phase 2: consume the iterator — resolve materials, upload geometry.
         let prepared = prepare_batches(
             batches,
             assets,
-            staging_buffer,
-            geometry_pool,
-            device,
-            queue,
+            material_registry,
+            &mut gpu,
             encoder,
         );
         if prepared.is_empty() {
             return;
         }
 
-        // Phase 4: extend or rebuild the uniform pool.
-        update_uniform_pool(
-            &prepared,
-            needs_rebuild,
-            bind_group_allocator,
-            device,
-            queue,
-            encoder,
-        );
-
-        // Phase 6: record the render pass.
-        record_pass(
+        // Phase 3: record the render pass.
+        let pass_ctx = PassContext {
             pass_descriptor,
-            &scene_bind_group,
-            &scene_bind_group_layout,
-            surface_format,
-            &prepared,
-            staging_buffer,
-            geometry_pool,
-            bind_group_allocator,
-            encoder,
+            scene_bind_group,
+            scene_bind_group_layout,
+            scene_layout_native: scene_bind_group_layout_native,
+            target_format: surface_format,
             view,
-            pipeline_cache,
-            device,
+        };
+        record_pass(
+            &pass_ctx,
+            &prepared,
+            &mut gpu,
+            encoder,
+            assets,
         );
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-//  Free functions — each phase of submit_batches. Taking individual field
-//  references (not &mut self) avoids borrow conflicts and makes the data
-//  flow explicit.
-// ──────────────────────────────────────────────────────────────────────────
-
-/// Phase 3: Consumes the batch iterator **once** into a `Vec<PreparedBatch>`.
+/// Phase 2: Consumes the batch iterator into a `Vec<PreparedBatch>`.
 ///
-/// For each batch: uploads geometry to the staging buffer (recording offsets),
-/// resolves the material handle, and compiles/fetches the pipeline. Batches
-/// whose material can't be resolved are silently skipped via `filter_map`.
-///
-/// The returned `PreparedBatch` items borrow `assets` (through
-/// `ResolvedMaterial`) — not any of the commander fields — so the result
-/// can coexist with mutable access to `bind_group_allocator` etc.
+/// For each batch: uploads geometry to the staging buffer, looks up the
+/// material registration by TypeId, calls `as_bind_group()` to get the
+/// owned `BindGroup`. Batches whose material type is not registered or
+/// whose asset can't be resolved are silently skipped.
 fn prepare_batches<'a>(
     batches: impl IntoIterator<Item = DrawBatch>,
     assets: &'a AssetsManager,
-    staging_buffer: &mut StagingBufferPool,
-    geometry_pool: &GeometryPool,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    material_registry: &'a crate::graphics::pipeline::MaterialRegistry,
+    gpu: &mut GpuResources<'_>,
     encoder: &mut wgpu::CommandEncoder,
 ) -> Vec<PreparedBatch<'a>> {
+    let GpuResources { device, queue, staging_buffer, geometry_pool, .. } = gpu;
+
     batches
         .into_iter()
         .filter_map(|batch| {
             // Geometry: owned → upload to dynamic staging; shared → look up
-            // permanent offsets from the geometry pool (no upload).
+            // permanent offsets from the geometry pool.
             let (vertex_offset, index_offset) = if let Some(geo_ref) = batch.shared_geometry() {
-                // Shared geometry: offsets are permanent, no upload.
                 let (v, i) = geometry_pool.offsets(geo_ref)?;
                 (BufferSource::Shared(v), BufferSource::Shared(i))
             } else {
-                // Owned geometry: upload to the dynamic staging buffer.
                 let vertices = batch.vertices()?;
                 let indices = batch.indices()?;
                 let v = staging_buffer.upload(vertices, device, queue, encoder);
@@ -392,17 +362,21 @@ fn prepare_batches<'a>(
                 (BufferSource::Dynamic(v), BufferSource::Dynamic(i))
             };
 
-            // Instance data is always dynamic (per-frame).
             let instance_offset = batch
                 .instances()
                 .map(|inst| staging_buffer.upload(inst, device, queue, encoder));
 
-            // Resolve material — skip if the handle is stale.
-            let resolved = ResolvedMaterial::new(batch.material, assets).ok()?;
+            // Look up material registration by TypeId.
+            let registration = material_registry.get(&batch.material.type_id)?;
+
+            // Resolve the material asset and call as_bind_group().
+            let as_bind_group = (registration.resolve)(batch.material, assets)?;
+            let bind_group = as_bind_group.as_bind_group();
 
             Some(PreparedBatch {
                 batch,
-                resolved,
+                registration,
+                bind_group,
                 staging_offsets: BatchStagingBufferOffsets {
                     vertex_offset,
                     index_offset,
@@ -413,89 +387,89 @@ fn prepare_batches<'a>(
         .collect()
 }
 
-/// Phase 4: Extends the uniform pool with new materials, or rebuilds it
-/// entirely if `needs_rebuild` is true (a tracked material was removed from
-/// the asset storage).
-///
-/// When extending, only materials not already tracked are passed — the
-/// `has_material` check filters them. When rebuilding, all materials are
-/// passed. No intermediate `Vec` is allocated: the iterator is consumed
-/// directly by `extend`/`rebuild`.
-fn update_uniform_pool(
-    prepared: &[PreparedBatch<'_>],
-    needs_rebuild: bool,
-    bind_group_allocator: &mut BindGroupAllocator,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    encoder: &mut wgpu::CommandEncoder,
-) {
-    if needs_rebuild {
-        bind_group_allocator.rebuild(
-            device,
-            queue,
-            encoder,
-            prepared.iter().map(|p| p.uniform_entry()),
-        );
-        bind_group_allocator.clear_bind_groups();
-    } else {
-        // Collect the handles of new materials first, so the iterator passed
-        // to `extend` doesn't hold an immutable borrow of `bind_group_allocator`
-        // while `extend` needs `&mut`.
-        let new_entries: Vec<MaterialUniformEntry> = prepared
-            .iter()
-            .filter(|p| !bind_group_allocator.uniform_pool().has_material(p.batch.material))
-            .map(|p| p.uniform_entry())
-            .collect();
-        bind_group_allocator.extend(device, queue, encoder, new_entries);
-    }
-}
-
-
 fn record_pass(
-    pass_descriptor: RenderPassDescriptor,
-    scene_bind_group: &wgpu::BindGroup,
-    scene_bind_group_layout: &wgpu::BindGroupLayout,
-    target_format: wgpu::TextureFormat,
+    pass_ctx: &PassContext<'_>,
     prepared: &[PreparedBatch<'_>],
-    staging_buffer: &mut StagingBufferPool,
-    geometry_pool: &GeometryPool,
-    bind_group_allocator: &mut BindGroupAllocator,
+    gpu: &mut GpuResources<'_>,
     encoder: &mut wgpu::CommandEncoder,
-    view: &wgpu::TextureView,
-    piepline_cache: &mut PipelineCache,
-    device: &wgpu::Device,
+    assets: &AssetsManager,
 ) {
+    let PassContext {
+        pass_descriptor,
+        scene_bind_group,
+        scene_bind_group_layout,
+        scene_layout_native,
+        target_format,
+        view,
+    } = pass_ctx;
+    let target_format = *target_format;
+    let pass_descriptor = pass_descriptor.clone();
+
+    let GpuResources {
+        device,
+        queue,
+        staging_buffer,
+        geometry_pool,
+        pipeline_cache,
+        render_cache,
+    } = gpu;
+
     let dynamic_buffer = staging_buffer.swap_buffers();
     let shared_buffer = geometry_pool.buffer();
 
     let mut pass = RenderPass::new(encoder, view, pass_descriptor);
     pass.set_bind_group(0, scene_bind_group, &[]);
 
-    let mut old_template_handle = None;
+    let mut current_material_type: Option<TypeId> = None;
+    let mut material_uniform_buffer = UniformBuffer::new();
 
     for p in prepared {
-        let template_handle = p.resolved.material_template.handle;
-        let pipeline = piepline_cache.get_or_compile(device, PipelineDescriptor {
-            material_template: p.resolved.material_template,
-            scene_bind_group_layout,
-            target_format,
-        });
-        if old_template_handle.is_none_or(|h| h != template_handle) {
-            pass.set_pipeline(pipeline);
-            old_template_handle = Some(template_handle);
-        };
+        let template = &p.registration.template;
 
-        if let Some(layout) = pipeline.bind_group_layout.as_ref() {
-            let bg = bind_group_allocator.get_or_build_bind_group(device, &p.resolved, layout);
-            pass.set_bind_group(1, bg, &[]);
+        let shader = render_cache.get_or_compile_shader(&template.shader, device);
+
+        let material_layout = template.bind_group_layout.create_layout(device, "Material bind group layout");
+
+        let pipeline = pipeline_cache.get_or_compile(
+            crate::graphics::pipeline::PipelineCompileRequest {
+                device,
+                shader,
+                template,
+                scene_layout: scene_bind_group_layout,
+                material_layout: material_layout.as_ref(),
+                target_format,
+                scene_layout_native: scene_layout_native.clone(),
+                material_layout_native: template.bind_group_layout.clone(),
+            },
+        );
+
+        if current_material_type != Some(p.batch.material.type_id) {
+            pass.set_pipeline(pipeline);
+            current_material_type = Some(p.batch.material.type_id);
         }
 
-        // Resolve the index count: for owned geometry, it's on the batch;
-        // for shared geometry, the batch returns 0 and we need to look up
-        // the actual count from the geometry pool's offsets.
+        // Build the per-frame wgpu::BindGroup from the owned BindGroup entries.
+        // Use the `material_layout` (owned) instead of `pipeline.bind_group_layout`
+        // so the `pipeline` borrow (which borrows `pipeline_cache`) ends
+        // here (NLL), allowing the `&mut render_cache` borrow for the bind group build.
+        if let Some(ref layout) = material_layout {
+            let wgpu_bg = build_material_bind_group(
+                BindGroupBuildRequest {
+                    device,
+                    queue,
+                    layout,
+                    bind_group: &p.bind_group,
+                    render_cache,
+                    assets,
+                    uniform_buffer: &mut material_uniform_buffer,
+                },
+            );
+            pass.set_bind_group(1, &wgpu_bg, &[]);
+        }
+
         let index_count = match p.staging_offsets.index_offset {
             BufferSource::Shared(o) => (o.size / 2) as u32,
-            _ => p.batch.index_count()
+            _ => p.batch.index_count(),
         };
 
         draw_call(
@@ -507,6 +481,95 @@ fn record_pass(
             p.batch.instance_count(),
         );
     }
+}
+
+/// Builds a `wgpu::BindGroup` from a `BindGroup` (owned entries) + GPU resources.
+///
+/// For uniform entries: uses `UniformBuffer` for aligned buffer creation
+/// (shared logic with scene uniforms). For texture entries: resolves the
+/// `GenericHandle` to a `GpuTexture` via the render cache and binds the view
+/// + sampler.
+struct BindGroupBuildRequest<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    layout: &'a wgpu::BindGroupLayout,
+    bind_group: &'a BindGroup,
+    render_cache: &'a mut RenderCache,
+    assets: &'a AssetsManager,
+    uniform_buffer: &'a mut UniformBuffer,
+}
+
+fn build_material_bind_group(req: BindGroupBuildRequest<'_>) -> wgpu::BindGroup {
+    let BindGroupBuildRequest {
+        device,
+        queue,
+        layout,
+        bind_group,
+        render_cache,
+        assets,
+        uniform_buffer,
+    } = req;
+
+    uniform_buffer.reset();
+
+    for entry in &bind_group.entries {
+        if let BindGroupEntry::Uniform { binding_slot, value, .. } = entry {
+            uniform_buffer.upload(*binding_slot, *value);
+        }
+    }
+    uniform_buffer.build(device);
+
+    // Ensure all textures and samplers are in the cache (requires &mut).
+    for entry in &bind_group.entries {
+        if let BindGroupEntry::Texture { texture, .. } = entry {
+            let Some(tex) = assets.get_asset(*texture) else { continue };
+            render_cache.get_or_create_gpu_texture(*texture, device, queue, tex);
+            render_cache.get_or_create_sampler(&tex.config().sampler_config, device);
+        }
+    }
+
+    // Single immutable pass: build all wgpu::BindGroupEntry from the cache.
+    let buffer = uniform_buffer.buffer();
+    let mut entries = Vec::new();
+
+    for entry in &bind_group.entries {
+        match entry {
+            BindGroupEntry::Uniform { binding_slot, value, .. } => {
+                if let (Some(buf), Some(offset)) = (buffer, uniform_buffer.offset(*binding_slot)) {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: *binding_slot,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: buf,
+                            offset,
+                            size: std::num::NonZeroU64::new(value.ty().size()),
+                        }),
+                    });
+                }
+            }
+            BindGroupEntry::Texture { binding_slot, sampler_binding_slot, texture, .. } => {
+                if let Some(tex) = assets.get_asset(*texture) {
+                    if let Some(gpu) = render_cache.gpu_texture(texture) {
+                        entries.push(wgpu::BindGroupEntry {
+                            binding: *binding_slot,
+                            resource: wgpu::BindingResource::TextureView(gpu.view()),
+                        });
+                    }
+                    if let Some(sampler) = render_cache.sampler(&tex.config().sampler_config) {
+                        entries.push(wgpu::BindGroupEntry {
+                            binding: *sampler_binding_slot,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Material bind group"),
+        layout,
+        entries: &entries,
+    })
 }
 
 /// Records a single indexed draw call. The vertex/index buffers may come

@@ -1,5 +1,4 @@
 pub mod batcher;
-pub mod quad;
 pub mod utils;
 pub mod vertex;
 pub mod render2d;
@@ -8,3 +7,4 @@ pub mod plugin;
 pub mod defaults;
 pub mod instance;
 pub mod sprite;
+pub mod materials;

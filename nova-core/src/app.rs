@@ -7,7 +7,7 @@ mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, material::{MaterialLoader, MaterialTemplateLoader}, render::RenderContextRef, sampler::SamplerLoader, shader::ShaderLoader, texture::TextureLoader}, plugin::Plugins, time::Clock, window::WindowApi};
+use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef}, plugin::Plugins, time::Clock, window::WindowApi};
 
 pub struct ApplicationContext {
     pub window_api: WindowApi,
@@ -78,8 +78,7 @@ impl<P: ApplicationProxy> Application<P> {
         let gfx = GraphicsContext::new(window_api.window.clone(), self.gfx_config)?;
         let render_ctx = RenderContextRef::new(gfx);
 
-        let mut assets_manager = AssetsManager::new(render_ctx.clone());
-        Self::init_assets_manager(&mut assets_manager);
+        let assets_manager = AssetsManager::new();
 
         let default_assets = DefaultAssets::new();
 
@@ -98,14 +97,5 @@ impl<P: ApplicationProxy> Application<P> {
         self.proxy.on_init(self.ctx.as_mut().unwrap())?;
 
         Ok(())
-    }
-
-
-    fn init_assets_manager(assets_manager: &mut AssetsManager) {
-        assets_manager.register_loader(ShaderLoader);
-        assets_manager.register_loader(SamplerLoader);
-        assets_manager.register_loader(TextureLoader);
-        assets_manager.register_loader(MaterialTemplateLoader);
-        assets_manager.register_loader(MaterialLoader);
     }
 }

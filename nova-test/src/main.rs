@@ -2,12 +2,31 @@
 use std::time::Duration;
 
 use nova::{
-    DefaultPlugins, core::{
-        EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, assets::{defaults::CoreDefaultAssets, handle::Handle}, graphics::{
-            color::Color, environment::{EnvironmentDescriptor, EnvironmentUniform}, frame::Frame, material::Material, render_pass::RenderPassDescriptor, sampler::{FilterMode, Sampler, SamplerMetadata}, shader::ShaderStage, texture::TextureMetadata, uniform::UniformValue,
-        }, math::vec2, time::Clock, window::LogicalSize,
-    }, nova2d::{
-        camera::Camera2D, defaults::{Nova2dDefaults, create_material_with_texture_meta}, quad::Quad, render2d::Render2D, sprite::SpriteAtlas,
+    DefaultPlugins,
+    core::{
+        EngineResult,
+        app::{ApplicationBuilder, ApplicationContext, ApplicationProxy},
+        assets::handle::Handle,
+        graphics::{
+            color::Color,
+            frame::Frame,
+            material::{BindGroup, BindGroupEntry},
+            render_pass::RenderPassDescriptor,
+            sampler::FilterMode,
+            shader::ShaderStage,
+            texture::{Texture, TextureConfig},
+            uniform::UniformValue,
+        },
+        math::vec2,
+        time::Clock,
+        window::LogicalSize,
+    },
+    nova2d::{
+        camera::Camera2D,
+        defaults::Nova2dDefaults,
+        materials::{ColorMaterial, SpriteMaterial},
+        render2d::Render2D,
+        sprite::{Sprite, SpriteAtlas},
     },
 };
 
@@ -21,8 +40,8 @@ mod stress;
 /// so the blue quad appears on top in the overlapping region. Both quads are
 /// semi-transparent (alpha 0.6) to make the overlap region clearly visible.
 pub struct App {
-    material: Option<Handle<Material>>,
-    tree_material: Option<Handle<Material>>,
+    color_material: Option<Handle<ColorMaterial>>,
+    tree_material: Option<Handle<SpriteMaterial>>,
     sprite_atlas: Option<SpriteAtlas>,
     sprite_index: u32,
     total_time: Clock,
@@ -32,7 +51,7 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         Self {
-            material: None,
+            color_material: None,
             tree_material: None,
             sprite_atlas: None,
             sprite_index: 0,
@@ -44,34 +63,43 @@ impl App {
 
 impl ApplicationProxy for App {
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()> {
-        // Reuse the plugin's default white-texture material. Vertex color
-        // (including alpha) modulates the white texture, giving us flat color
-        // quads with per-quad alpha.
-        self.material = Some(ctx.default_assets.expect(Nova2dDefaults::WhiteTextureMaterial));
-
-        self.tree_material = Some(
-            create_material_with_texture_meta(
-                ctx, 
-                TextureMetadata::from_file(
-                    "./nova-test/assets/tree.png", 
-                    ctx.default_assets.expect(CoreDefaultAssets::DefaultSampler)
-                )
-            )?
+        // Default color material — vertex color (including alpha) modulates
+        // the uniform color, giving us flat color sprites with per-sprite alpha.
+        self.color_material = Some(
+            ctx.default_assets
+                .expect::<ColorMaterial>(Nova2dDefaults::DefaultColorMaterial),
         );
 
-        let atlas_mat = 
-            create_material_with_texture_meta(
-                ctx,
-                TextureMetadata::from_file(
-                    "C:\\dev\\nova-engine\\nova-test\\assets\\sample(idle&walk)\\walk\\sprite sheets\\walk.png",
-                    ctx.default_assets.expect(Nova2dDefaults::PixelatedSampler)
-                )
-            )?;
+        // Tree texture: load a CPU Texture asset, then wrap it in a SpriteMaterial.
+        let pixelated = TextureConfig {
+            sampler_config: nova::core::graphics::sampler::SamplerConfig {
+                mag_filter: FilterMode::Nearest,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let tree_texture =
+            Texture::from_file("./nova-test/assets/tree.png", pixelated.clone())
+                .map_err(|e| nova::core::errors::EngineError::UserError(e.to_string()))?;
+        let tree_texture_handle = ctx.assets_manager.insert_asset(tree_texture);
+        let tree_material = SpriteMaterial::new(tree_texture_handle);
+        self.tree_material = Some(ctx.assets_manager.insert_asset(tree_material));
+
+        // Walk-cycle atlas: load the sprite sheet, wrap in SpriteMaterial, build atlas.
+        let walk_texture = Texture::from_file(
+            "C:\\dev\\nova-engine\\nova-test\\assets\\sample(idle&walk)\\walk\\sprite sheets\\walk.png",
+            pixelated,
+        )
+        .map_err(|e| nova::core::errors::EngineError::UserError(e.to_string()))?;
+        let walk_texture_handle = ctx.assets_manager.insert_asset(walk_texture);
+        let walk_material = SpriteMaterial::new(walk_texture_handle);
+        let walk_material_handle = ctx.assets_manager.insert_asset(walk_material);
+
         let atlas_size = vec2(180.0, 348.0);
         let cell_size = vec2(45.0, 58.0);
         self.sprite_atlas = Some(SpriteAtlas::new(
-            atlas_mat, 
-            atlas_size, 
+            walk_material_handle.into_generic(),
+            atlas_size,
             cell_size,
         ));
 
@@ -92,10 +120,10 @@ impl ApplicationProxy for App {
         // Centered camera: world (0, 0) = screen center.
         let camera = Camera2D::with_size(screen);
 
-        // Quad size — large enough to overlap comfortably.
+        // Sprite size — large enough to overlap comfortably.
         let size: f32 = 300.0;
 
-        // Offset from center for each quad. With a 300px quad and a 120px
+        // Offset from center for each sprite. With a 300px sprite and a 120px
         // offset, the overlap region is 300 - 120 = 180px wide.
         let offset: f32 = 120.0;
 
@@ -107,33 +135,29 @@ impl ApplicationProxy for App {
         let cx = screen.x * 0.5;
         let cy = screen.y * 0.5;
 
-
-        // Quad A — red, bottom-left of center, z = 0.
-        let quad_a = Quad::new(self.material.unwrap())
+        // Sprite A — red, bottom-left of center, z = 0.
+        let _sprite_a = Sprite::new(self.color_material.unwrap().into_generic())
             .with_position(vec2(cx - offset + sway, cy + sway_y))
             .with_scale(vec2(size, size))
             .with_color(Color { r: 1.0, g: 0.2, b: 0.2, a: 0.6 })
             .with_z_index(0);
 
-        // Quad B — blue, top-right of center, z = 1 (drawn on top).
-        let quad_b = Quad::new(self.material.unwrap())
+        // Sprite B — blue, top-right of center, z = 1 (drawn on top).
+        let _sprite_b = Sprite::new(self.color_material.unwrap().into_generic())
             .with_position(vec2(cx + offset + sway, cy + sway_y))
             .with_scale(vec2(size, size))
             .with_color(Color { r: 0.2, g: 0.3, b: 1.0, a: 0.6 })
             .with_z_index(1);
 
-        let quad_tree_tex = Quad::new(self.tree_material.unwrap())
+        let _sprite_tree = Sprite::new(self.tree_material.unwrap().into_generic())
             .with_position(vec2((cx + offset + sway) * 0.5, cy - offset + sway_y))
             .with_scale(vec2(size, size))
-            .with_angle(sway * sway_y)
-            .with_angle(total_time * 0.5);
+            .with_angle((total_time * 0.5).into());
 
         let sprite_atlas = self.sprite_atlas.as_ref().unwrap();
-        //self.sprite_index = 5;
         let sprite = match sprite_atlas.sprite(self.sprite_index) {
             Some(sprite) => sprite,
             None => {
-                //std::process::exit(0);
                 self.sprite_index = 0;
                 sprite_atlas.sprite(0).unwrap()
             }
@@ -141,22 +165,21 @@ impl ApplicationProxy for App {
 
         let character = sprite
             .with_position((100.0, 200.0).into())
-            .with_scale(vec2(45.0, 58.0) * 3.0) ;
+            .with_scale(vec2(45.0, 58.0) * 3.0);
 
         let mut target = frame.render_target(&ctx.render_ctx);
 
-        let commander = target.commander(
-            EnvironmentDescriptor::new().add_uniform(EnvironmentUniform {
-                binding_slot: 0,
-                visibilty: ShaderStage::Vertex,
-                uniform: UniformValue::Mat4(camera.projection()),
-            }),
-        );
+        let environment = BindGroup::new().with_entry(BindGroupEntry::Uniform {
+            binding_slot: 0,
+            visibility: ShaderStage::Vertex,
+            value: UniformValue::Mat4(camera.projection()),
+        });
+        let commander = target.commander(environment);
 
         let mut renderer = Render2D::begin_scene(commander);
-        // renderer.draw(quad_a);
-        // renderer.draw(quad_b);
-        // renderer.draw(quad_tree_tex);
+        // renderer.draw(_sprite_a);
+        // renderer.draw(_sprite_b);
+        // renderer.draw(_sprite_tree);
         renderer.draw(character);
         renderer.end_scene(RenderPassDescriptor::new(), &ctx.assets_manager);
     }
@@ -166,7 +189,7 @@ fn main() -> EngineResult<()> {
     //simple_logger::init_with_env().unwrap();
 
     println!("=== Nova Engine — Overlap Demo ===");
-    println!("Two semi-transparent quads that partially overlap.");
+    println!("Two semi-transparent sprites that partially overlap.");
 
     ApplicationBuilder::new(App::new())
         .alter_window_attributes(|win_attr| win_attr.with_inner_size(LogicalSize::new(800, 600)))

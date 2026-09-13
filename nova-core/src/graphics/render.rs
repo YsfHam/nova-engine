@@ -1,7 +1,84 @@
 
-use std::{cell::{Ref, RefCell, RefMut}, rc::Rc};
+use std::{cell::{Ref, RefCell, RefMut}, collections::HashMap, rc::Rc};
 
-use crate::{EngineResult, graphics::{bind::BindGroupAllocator, buffer::StagingBufferPool, context::GraphicsContext, frame::Frame, geometry::GeometryPool, pipeline::PipelineCache, render_target::TextureRenderTarget, texture::TextureFormat}};
+use crate::{EngineResult, assets::handle::Handle, graphics::{buffer::StagingBufferPool, context::GraphicsContext, frame::Frame, geometry::GeometryPool, pipeline::{MaterialRegistry, PipelineCache}, render_target::TextureRenderTarget, sampler::SamplerConfig, shader::{self, Shader, ShaderInfo}, texture::{GpuTexture, Texture, TextureFormat}}};
+
+
+/// Groups the three GPU resource caches (textures, samplers, shaders) into a
+/// single struct so `RenderContext` has one field and the commander borrows
+/// one `&mut RenderCache` instead of three separate cache references.
+pub(crate) struct RenderCache {
+    texture_cache: HashMap<Handle<Texture>, GpuTexture>,
+    sampler_cache: HashMap<SamplerConfig, wgpu::Sampler>,
+    shader_cache: HashMap<ShaderInfo, Shader>,
+}
+
+impl RenderCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            texture_cache: HashMap::new(),
+            sampler_cache: HashMap::new(),
+            shader_cache: HashMap::new(),
+        }
+    }
+
+    /// Returns the cached `GpuTexture` for `handle`, or creates one from the
+    /// CPU `Texture` asset and caches it.
+    pub(crate) fn get_or_create_gpu_texture(
+        &mut self,
+        handle: Handle<Texture>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &Texture,
+    ) -> &GpuTexture {
+        if !self.texture_cache.contains_key(&handle) {
+            let gpu = GpuTexture::new(device, queue, texture.data(), texture.size(), texture.config());
+            self.texture_cache.insert(handle, gpu);
+        }
+        self.texture_cache.get(&handle).unwrap()
+    }
+
+    /// Returns a reference to a cached `GpuTexture` without creating one.
+    /// The caller must have already called `get_or_create_gpu_texture`.
+    pub(crate) fn gpu_texture(&self, handle: &Handle<Texture>) -> Option<&GpuTexture> {
+        self.texture_cache.get(handle)
+    }
+
+    /// Returns a reference to a cached sampler without creating one.
+    /// The caller must have already called `get_or_create_sampler`.
+    pub(crate) fn sampler(&self, config: &SamplerConfig) -> Option<&wgpu::Sampler> {
+        self.sampler_cache.get(config)
+    }
+
+    /// Returns the cached sampler for `config`, or creates one and caches it.
+    pub(crate) fn get_or_create_sampler(
+        &mut self,
+        config: &SamplerConfig,
+        device: &wgpu::Device,
+    ) -> &wgpu::Sampler {
+        if !self.sampler_cache.contains_key(config) {
+            self.sampler_cache
+                .insert(config.clone(), device.create_sampler(&config.descriptor()));
+        }
+        self.sampler_cache.get(config).unwrap()
+    }
+
+    /// Returns the cached shader for `ShaderInfo`, or compiles one and caches it.
+    pub(crate) fn get_or_compile_shader(
+        &mut self,
+        shader_info: &ShaderInfo,
+        device: &wgpu::Device,
+    ) -> &Shader {
+        self.shader_cache
+            .entry(shader_info.clone())
+            .or_insert_with(|| {
+                let source_str = shader::load_source(&shader_info.source)
+                    .unwrap_or_else(|e| panic!("Failed to load shader source: {e}"));
+                let label = shader::source_label(&shader_info.source);
+                Shader::new(device, &label, &source_str, shader_info.entry_point.clone())
+            })
+    }
+}
 
 
 /// A clonable, interior-mutable handle to the [`RenderContext`].
@@ -24,13 +101,6 @@ impl RenderContextRef {
         Self {
             inner: Rc::new(RefCell::new(RenderContext::new(gfx)))
         }
-    }
-
-    /// Clones the handle (cheap — `Rc` bump). `pub(crate)` because the
-    /// `AssetsManager` needs it, but external code should obtain the ref
-    /// from `ApplicationContext.render_ctx`.
-    pub(crate) fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
     }
 
     /// Immutably borrows the inner `RenderContext`. `pub(crate)` — used by
@@ -63,6 +133,12 @@ impl RenderContextRef {
         label: Option<&str>,
     ) -> TextureRenderTarget {
         self.inner.borrow().create_texture_target(width, height, format, label)
+    }
+
+    /// Registers a material type so the renderer can resolve it by `TypeId`
+    /// at draw time. Call during plugin init for each material type.
+    pub fn register_material<M: crate::graphics::material::Material>(&self) {
+        self.inner.borrow_mut().register_material::<M>();
     }
 
     /// Inserts shared geometry into the persistent [`GeometryPool`] and
@@ -112,9 +188,10 @@ impl RenderContextRef {
 pub struct RenderContext {
     pub(crate) gfx: GraphicsContext,
     pub(crate) pipeline_cache: PipelineCache,
-    pub(crate) bind_group_allocator: BindGroupAllocator,
     pub(crate) staging_buffer_pool: StagingBufferPool,
     pub(crate) geometry_pool: GeometryPool,
+    pub(crate) render_cache: RenderCache,
+    pub(crate) material_registry: MaterialRegistry,
     command_buffers: Option<Vec<wgpu::CommandBuffer>>,
 }
 
@@ -122,9 +199,10 @@ impl RenderContext {
     pub(crate) fn new(gfx: GraphicsContext) -> Self {
         Self {
             pipeline_cache: PipelineCache::new(),
-            bind_group_allocator: BindGroupAllocator::new(&gfx.device),
             staging_buffer_pool: StagingBufferPool::new(&gfx.device, 1024 * 1024),
             geometry_pool: GeometryPool::new(&gfx.device),
+            render_cache: RenderCache::new(),
+            material_registry: MaterialRegistry::new(),
             gfx,
             command_buffers: Some(Vec::new()),
         }
@@ -146,6 +224,12 @@ impl RenderContext {
     /// (`PipelineDescriptor::target_format`).
     pub(crate) fn surface_format(&self) -> wgpu::TextureFormat {
         self.gfx.config.format
+    }
+
+    /// Registers a material type so the renderer can resolve it by `TypeId`
+    /// at draw time. Call during plugin init for each material type.
+    pub fn register_material<M: crate::graphics::material::Material>(&mut self) {
+        self.material_registry.register::<M>();
     }
 
     /// Creates an off-screen [`TextureRenderTarget`] with the given

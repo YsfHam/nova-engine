@@ -1,6 +1,6 @@
 use nova_core::{assets::AssetsManager, graphics::{render_pass::RenderPassDescriptor, render_target::RenderTargetCommander}};
 
-use crate::{batcher::Batcher2D, quad::Quad};
+use crate::{batcher::Batcher2D, sprite::Sprite};
 
 pub struct Render2D<'a> {
     commander: RenderTargetCommander<'a>,
@@ -8,9 +8,7 @@ pub struct Render2D<'a> {
 }
 
 impl<'a> Render2D<'a> {
-    pub fn begin_scene(
-        commander: RenderTargetCommander<'a>,
-    ) -> Self {
+    pub fn begin_scene(commander: RenderTargetCommander<'a>) -> Self {
         Self {
             commander,
             batcher: Batcher2D::new(),
@@ -18,14 +16,12 @@ impl<'a> Render2D<'a> {
     }
 
     /// Pre-allocates capacity for `hint` instances per material group.
-    /// Call before `draw_quad` if you know the quad count — eliminates
-    /// reallocation churn as instance vectors grow.
     pub fn reserve(&mut self, hint: usize) {
         self.batcher.reserve(hint);
     }
 
-    pub fn draw(&mut self, quad: impl Into<Quad>) {
-        self.batcher.add_quad(quad.into());
+    pub fn draw(&mut self, sprite: Sprite) {
+        self.batcher.add_sprite(sprite);
     }
 
     pub fn end_scene(self, pass_descriptor: RenderPassDescriptor, assets: &AssetsManager) {

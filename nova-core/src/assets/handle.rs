@@ -3,11 +3,49 @@ use std::{any::TypeId, fmt::Debug, hash::Hash, marker::PhantomData};
 use crate::assets::Asset;
 
 #[derive(Copy, Clone)]
-pub(crate) struct GenericHandle {
-    index: u32,
-    generation: u32,
-    type_id: TypeId,
+pub struct GenericHandle {
+    pub index: u32,
+    pub generation: u32,
+    pub type_id: TypeId,
 }
+
+impl GenericHandle {
+    pub fn try_into_handle<A: Asset>(self) -> Result<Handle<A>, ()> {
+        if TypeId::of::<A>() != self.type_id {
+            Err(())
+        } else {
+            Ok(Handle::new(self.index, self.generation))
+        }
+    }
+}
+
+impl Debug for GenericHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenericHandle")
+            .field("index", &self.index)
+            .field("generation", &self.generation)
+            .field("type_id", &self.type_id)
+            .finish()
+    }
+}
+
+impl Hash for GenericHandle {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.index.hash(state);
+        self.generation.hash(state);
+        self.type_id.hash(state);
+    }
+}
+
+impl PartialEq for GenericHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+            && self.generation == other.generation
+            && self.type_id == other.type_id
+    }
+}
+
+impl Eq for GenericHandle {}
 
 pub struct Handle<A: Asset> {
     pub(in crate::assets) index: u32,
@@ -25,21 +63,6 @@ impl<A: Asset> From<Handle<A>> for GenericHandle {
     }
 }
 
-impl<A: Asset> TryFrom<GenericHandle> for Handle<A> {
-    type Error = ();
-
-    fn try_from(value: GenericHandle) -> Result<Self, Self::Error> {
-        let type_id = TypeId::of::<A>();
-        if type_id != value.type_id {
-            Err(())
-        }
-        else {
-            Ok(Handle::new(value.index, value.generation))
-        }
-
-    }
-}
-
 impl<A: Asset> Handle<A> {
     pub(in crate::assets) fn new(index: u32, generation: u32) -> Self {
         Self {
@@ -47,6 +70,10 @@ impl<A: Asset> Handle<A> {
             index,
             generation,
         }
+    }
+
+    pub fn into_generic(self) -> GenericHandle {
+        self.into()
     }
 }
 
