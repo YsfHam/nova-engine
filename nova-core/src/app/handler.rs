@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow}};
 
+#[cfg(feature = "egui")]
+use crate::graphics::frame::Frame;
 use crate::{EngineResult, app::{Application, ApplicationContext, ApplicationProxy}};
 
 impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
@@ -41,10 +43,12 @@ impl<P: ApplicationProxy> Application<P> {
         let ctx = self.ctx.as_mut().unwrap();
         let proxy = &mut self.proxy;
 
-
-        let response = ctx.egui_state.on_event(&event);
-        if response.consumed {
-            return Ok(());
+        #[cfg(feature = "egui")]
+        {
+            let response = ctx.egui_state.on_event(&event);
+            if response.consumed {
+                return Ok(());
+            }
         }
 
         match event {
@@ -84,14 +88,20 @@ impl<P: ApplicationProxy> Application<P> {
 
             proxy.on_render(ctx, &mut frame);
 
-            ctx.egui_state.new_frame();
-            proxy.on_gui(ctx.egui_state.context());
-            ctx.egui_state.submit_frame(frame.render_target(&ctx.render_ctx));   
+            #[cfg(feature = "egui")]
+            Self::egui_render(proxy, ctx, &mut frame);  
 
             ctx.render_ctx.get_mut().submit_commands();
             frame.present(&ctx.render_ctx);
         }
         
         Ok(())
+    }
+
+    #[cfg(feature = "egui")]
+    fn egui_render(proxy: &mut P, ctx: &mut ApplicationContext, frame: &mut Frame) {
+        ctx.egui_state.new_frame();
+        proxy.on_gui(ctx.egui_state.context());
+        ctx.egui_state.submit_frame(frame.render_target(&ctx.render_ctx));  
     }
 }

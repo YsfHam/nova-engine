@@ -4,14 +4,20 @@ use winit::{event::WindowEvent, window::Window};
 
 use crate::graphics::{render::RenderContext, render_pass::{RenderPass, RenderPassDescriptor}, render_target::RenderTarget};
 
+#[cfg(feature = "egui")]
 pub use egui;
 
+#[cfg(feature = "egui")]
 pub(crate) struct EguiState {
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
     window: Arc<Window>,
 }
 
+#[cfg(not(feature = "egui"))]
+pub(crate) struct EguiState;
+
+#[cfg(feature = "egui")]
 impl EguiState {
     pub(crate) fn new(render_ctx: &RenderContext, window: Arc<Window>) -> Self {
         let context = egui::Context::default();

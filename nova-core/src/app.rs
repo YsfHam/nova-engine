@@ -28,6 +28,7 @@ pub trait ApplicationProxy {
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()>;
     fn on_update(&mut self, ctx: &mut ApplicationContext, dt: Duration);
     fn on_render(&mut self, ctx: &ApplicationContext, frame: &mut Frame);
+    #[cfg(feature = "egui")]
     fn on_gui(&mut self, ctx: &egui::Context);
 }
 
@@ -80,8 +81,10 @@ impl<P: ApplicationProxy> Application<P> {
         let window_api = WindowApi::new(event_loop, window_attributes)?;
         let gfx = GraphicsContext::new(window_api.window.clone(), self.gfx_config)?;
         let render_ctx = RenderContextRef::new(gfx);
-
+        #[cfg(feature = "egui")]
         let egui_state = EguiState::new(&render_ctx.get(), window_api.window.clone());
+        #[cfg(not(feature = "egui"))]
+        let egui_state = EguiState;
 
         let assets_manager = AssetsManager::new();
 

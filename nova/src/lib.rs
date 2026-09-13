@@ -5,6 +5,7 @@ pub mod core {
     pub use nova_core::*;
 }
 
+#[cfg(feature = "egui")]
 pub mod egui {
     pub use nova_core::egui::egui::*;
 }

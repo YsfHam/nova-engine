@@ -11,6 +11,11 @@ image = "0.25.10"
 glam = { version = "0.30", features = ["bytemuck"]}
 bytemuck = { version = " 1.25.2", features = ["derive"] }
 bitflags = "2.9"
-egui-wgpu = "0.36.2"
-egui-winit = "0.36.2"
-egui = "0.36.2"
+
+### Egui integration dependencies
+egui-wgpu = { version = "0.36.2", optional = true }
+egui-winit = {version = "0.36.2", optional = true }
+egui = {version = "0.36.2", optional = true }
+
+[features]
+egui = ["dep:egui-wgpu", "dep:egui-winit", "dep:egui"]
