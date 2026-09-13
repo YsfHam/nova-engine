@@ -23,7 +23,22 @@ ApplicationBuilder::new(App::new())
 
 ## Planned Scope
 
-- Add feature flags for selecting 2D, 3D, audio, and optional integrations.
-- Add a 3D facade module when the 3D crate exists.
-- Keep default plugin composition explicit and predictable as more subsystems are added.
-- Provide a stable prelude only after the public API has settled.
+### Short Term
+
+- **Feature flags** for selecting 2D, 3D, audio, and optional integrations. Applications opt into only the subsystems they need.
+- **Prelude module** — a curated re-export of the most commonly used types (`Camera2D`, `Render2D`, `Sprite`, `ShapeInstance`, `Color`, `Vec2`, etc.) so applications don't need long import lists.
+- **Input facade** — re-export the input API from nova-core once implemented (nova-core Phase 1.1).
+- **Scene facade** — re-export scene system types once `nova-scene` or nova-2d's scene module exists (nova-2d Phase 3).
+
+### Medium Term
+
+- **3D facade module** (`nova3d`) when the 3D crate exists (nova-core Phase 5).
+- **Audio facade** when an audio crate is added.
+- **Asset loading facade** — convenience helpers for loading textures, shaders, and materials from files (nova-core Phase 2.1).
+- **Default plugin composition** — expand `DefaultPlugins` to include input handling and asset loading as they become available.
+
+### Long Term
+
+- **Editor integration** — optional debug/editor plugin with gizmos, inspector, and scene hierarchy view.
+- **Stable API guarantee** — once the public API has settled, provide a `1.0`-style stability guarantee with deprecation cycles.
+- **Platform backends** — web (WebGPU), mobile, and desktop-specific configurations surfaced through the facade.
