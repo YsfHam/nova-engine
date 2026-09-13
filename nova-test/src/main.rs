@@ -2,12 +2,8 @@
 use std::time::Duration;
 
 use nova::{
-    DefaultPlugins,
-    core::{
-        EngineResult,
-        app::{ApplicationBuilder, ApplicationContext, ApplicationProxy},
-        assets::handle::Handle,
-        graphics::{
+    DefaultPlugins, core::{
+        EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, assets::handle::Handle, graphics::{
             color::Color,
             frame::Frame,
             material::{BindGroup, BindGroupEntry},
@@ -16,12 +12,8 @@ use nova::{
             shader::ShaderStage,
             texture::{Texture, TextureConfig},
             uniform::UniformValue,
-        },
-        math::vec2,
-        time::Clock,
-        window::LogicalSize,
-    },
-    nova2d::{
+        }, math::{Angle, vec2}, time::Clock, window::LogicalSize,
+    }, nova2d::{
         camera::Camera2D,
         defaults::Nova2dDefaults,
         materials::{ColorMaterial, SpriteMaterial},
@@ -117,8 +109,9 @@ impl ApplicationProxy for App {
         let (width, height) = ctx.window_api.size();
         let screen = vec2(width as f32, height as f32);
 
-        // Centered camera: world (0, 0) = screen center.
-        let camera = Camera2D::with_size(screen);
+        // Top-left camera: world (0, 0) = top-left of screen.
+        let cx = screen.x * 0.5;
+        let cy = screen.y * 0.5;
 
         // Sprite size — large enough to overlap comfortably.
         let size: f32 = 300.0;
@@ -132,8 +125,9 @@ impl ApplicationProxy for App {
         let sway = (total_time * 1.5).sin() * 40.0;
         let sway_y = (total_time * 1.5).cos() * 40.0;
 
-        let cx = screen.x * 0.5;
-        let cy = screen.y * 0.5;
+        let mut camera = Camera2D::with_size(screen);
+        camera.rotation = Angle::Degrees(45.0);
+        camera.zoom = 2.0;
 
         // Sprite A — red, bottom-left of center, z = 0.
         let _sprite_a = Sprite::new(self.color_material.unwrap().into_generic())
@@ -164,7 +158,7 @@ impl ApplicationProxy for App {
         };
 
         let character = sprite
-            .with_position((100.0, 200.0).into())
+            .with_position((cx, cy).into())
             .with_scale(vec2(45.0, 58.0) * 3.0);
 
         let mut target = frame.render_target(&ctx.render_ctx);
@@ -177,9 +171,9 @@ impl ApplicationProxy for App {
         let commander = target.commander(environment);
 
         let mut renderer = Render2D::begin_scene(commander);
-        // renderer.draw(_sprite_a);
-        // renderer.draw(_sprite_b);
-        // renderer.draw(_sprite_tree);
+        renderer.draw(_sprite_a);
+        renderer.draw(_sprite_b);
+        renderer.draw(_sprite_tree);
         renderer.draw(character);
         renderer.end_scene(RenderPassDescriptor::new(), &ctx.assets_manager);
     }
