@@ -90,6 +90,20 @@ impl DrawBatch {
         self
     }
 
+    /// Builder: add raw instance bytes (enables instanced drawing).
+    ///
+    /// This is the type-erased variant of [`with_instances`](Self::with_instances).
+    /// The caller is responsible for ensuring `instances` contains a whole
+    /// number of elements of `instance_stride` bytes each, and that the byte
+    /// layout matches the pipeline's instance buffer layout.
+    pub fn with_instances_raw(mut self, instances: &[u8], instance_stride: u32) -> Self {
+        self.instance_batch = Some(InstanceBatch {
+            instances: instances.to_vec(),
+            instance_stride,
+        });
+        self
+    }
+
     pub fn add_instances<I: NoUninit>(&mut self, instances: &[I]) {
         let instance_stride = std::mem::size_of::<I>() as u32;
         if self.instance_batch.is_none() {

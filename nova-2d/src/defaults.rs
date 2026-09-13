@@ -25,6 +25,7 @@ pub enum Nova2dDefaults {
     WhiteTexture,
     DefaultColorMaterial,
     DefaultSpriteMaterial,
+    DefaultCircleMaterial,
 }
 
 impl DefaultAssetsKey for Nova2dDefaults {
@@ -33,6 +34,7 @@ impl DefaultAssetsKey for Nova2dDefaults {
             Nova2dDefaults::WhiteTexture => "WhiteTexture",
             Nova2dDefaults::DefaultColorMaterial => "DefaultColorMaterial",
             Nova2dDefaults::DefaultSpriteMaterial => "DefaultSpriteMaterial",
+            Nova2dDefaults::DefaultCircleMaterial => "DefaultCircleMaterial",
         }
     }
 }

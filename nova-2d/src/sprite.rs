@@ -1,75 +1,22 @@
-use nova_core::{assets::handle::GenericHandle, graphics::color::Color, math::{Angle, Mat3, Vec2, vec2}};
+use nova_core::{
+    assets::handle::Handle,
+    math::Vec2,
+};
 
-use crate::utils::RectF32;
+use crate::{
+    materials::SpriteMaterial,
+    shape::{RectangleShape, ShapeInstance},
+    utils::RectF32,
+};
 
-/// A sprite: a quad with a material reference and per-instance data
-/// (position, scale, color, z-index, UV rect).
-#[derive(Clone, Copy)]
-pub struct Sprite {
-    pub position: Vec2,
-    pub angle: Angle,
-    pub scale: Vec2,
-    pub material: GenericHandle,
-    pub color: Color,
-    pub z_index: u32,
-    pub uv: RectF32,
-}
+/// A sprite: a textured rectangle. This is a convenience alias for
+/// `ShapeInstance<RectangleShape>` — it carries a position, scale, rotation,
+/// color, UV rect, material handle, and z-index.
+pub type Sprite = ShapeInstance<RectangleShape>;
 
-impl Sprite {
-    pub fn new(material: GenericHandle) -> Self {
-        Self {
-            material,
-            color: Color::WHITE,
-            z_index: 0,
-            uv: RectF32 {
-                top: 0.0,
-                left: 0.0,
-                bottom: 1.0,
-                right: 1.0,
-            },
-            position: Vec2::ZERO,
-            angle: Angle::ZERO,
-            scale: vec2(1.0, 1.0),
-        }
-    }
-
-    pub fn with_position(mut self, position: Vec2) -> Self {
-        self.position = position;
-        self
-    }
-
-    pub fn with_scale(mut self, scale: Vec2) -> Self {
-        self.scale = scale;
-        self
-    }
-
-    pub fn with_angle(mut self, angle: Angle) -> Self {
-        self.angle = angle;
-        self
-    }
-
-    pub fn with_color(mut self, color: Color) -> Self {
-        self.color = color;
-        self
-    }
-
-    pub fn with_z_index(mut self, z_index: u32) -> Self {
-        self.z_index = z_index;
-        self
-    }
-
-    pub fn with_uv(mut self, uv: RectF32) -> Self {
-        self.uv = uv;
-        self
-    }
-
-    pub fn transform(&self) -> Mat3 {
-        Mat3::from_scale_angle_translation(
-            self.scale,
-            self.angle.into(),
-            self.position,
-        )
-    }
+/// Creates a new sprite with the given sprite material handle.
+pub fn sprite(material: Handle<crate::materials::SpriteMaterial>) -> Sprite {
+    ShapeInstance::new(material)
 }
 
 /// A grid-based sprite atlas: a texture divided into fixed-size cells.
@@ -77,7 +24,7 @@ impl Sprite {
 /// All sprites share one [`GenericHandle`] (which binds the atlas texture).
 /// Sprites are indexed by `u32` — row-major order (left-to-right, top-to-bottom).
 pub struct SpriteAtlas {
-    material: GenericHandle,
+    material: Handle<SpriteMaterial>,
     /// Number of columns/rows in the grid (atlas_size / sprite_size).
     grid: Vec2,
     /// Pixel size of each cell. Used to compute UVs in pixel space first,
@@ -93,7 +40,7 @@ impl SpriteAtlas {
     ///
     /// `atlas_size` is the texture dimensions in pixels. `sprite_size` is
     /// the dimensions of each cell in pixels. The atlas must divide evenly.
-    pub fn new(material: GenericHandle, atlas_size: Vec2, sprite_size: Vec2) -> Self {
+    pub fn new(material: Handle<SpriteMaterial>, atlas_size: Vec2, sprite_size: Vec2) -> Self {
         let grid = atlas_size / sprite_size;
         Self {
             material,

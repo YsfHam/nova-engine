@@ -12,12 +12,13 @@ use nova::{
             shader::ShaderStage,
             texture::{Texture, TextureConfig},
             uniform::UniformValue,
-        }, math::{Angle, vec2}, time::Clock, window::LogicalSize,
+        }, math::vec2, time::Clock, window::LogicalSize,
     }, nova2d::{
         camera::Camera2D,
         defaults::Nova2dDefaults,
-        materials::{ColorMaterial, SpriteMaterial},
+        materials::{CircleMaterial, SpriteMaterial},
         render2d::Render2D,
+        shape::{CircleShape, ShapeInstance},
         sprite::{Sprite, SpriteAtlas},
     },
 };
@@ -32,8 +33,9 @@ mod stress;
 /// so the blue quad appears on top in the overlapping region. Both quads are
 /// semi-transparent (alpha 0.6) to make the overlap region clearly visible.
 pub struct App {
-    color_material: Option<Handle<ColorMaterial>>,
+    sprite_material: Option<Handle<SpriteMaterial>>,
     tree_material: Option<Handle<SpriteMaterial>>,
+    circle_material: Option<Handle<CircleMaterial>>,
     sprite_atlas: Option<SpriteAtlas>,
     sprite_index: u32,
     total_time: Clock,
@@ -43,8 +45,9 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         Self {
-            color_material: None,
+            sprite_material: None,
             tree_material: None,
+            circle_material: None,
             sprite_atlas: None,
             sprite_index: 0,
             total_time: Clock::new(),
@@ -55,11 +58,17 @@ impl App {
 
 impl ApplicationProxy for App {
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()> {
-        // Default color material — vertex color (including alpha) modulates
-        // the uniform color, giving us flat color sprites with per-sprite alpha.
-        self.color_material = Some(
+        // Default sprite material (white texture) — per-instance color
+        // provides flat-color rendering via vertex color modulation.
+        self.sprite_material = Some(
             ctx.default_assets
-                .expect::<ColorMaterial>(Nova2dDefaults::DefaultColorMaterial),
+                .expect::<SpriteMaterial>(Nova2dDefaults::DefaultSpriteMaterial),
+        );
+
+        // Default circle material (no bind group data — color is per-instance).
+        self.circle_material = Some(
+            ctx.default_assets
+                .expect::<CircleMaterial>(Nova2dDefaults::DefaultCircleMaterial),
         );
 
         // Tree texture: load a CPU Texture asset, then wrap it in a SpriteMaterial.
@@ -90,7 +99,7 @@ impl ApplicationProxy for App {
         let atlas_size = vec2(180.0, 348.0);
         let cell_size = vec2(45.0, 58.0);
         self.sprite_atlas = Some(SpriteAtlas::new(
-            walk_material_handle.into_generic(),
+            walk_material_handle,
             atlas_size,
             cell_size,
         ));
@@ -125,28 +134,33 @@ impl ApplicationProxy for App {
         let sway = (total_time * 1.5).sin() * 40.0;
         let sway_y = (total_time * 1.5).cos() * 40.0;
 
-        let mut camera = Camera2D::with_size(screen);
-        camera.rotation = Angle::Degrees(45.0);
-        camera.zoom = 2.0;
+        let camera = Camera2D::with_size(screen);
 
         // Sprite A — red, bottom-left of center, z = 0.
-        let _sprite_a = Sprite::new(self.color_material.unwrap().into_generic())
+        let _sprite_a = Sprite::new(self.sprite_material.unwrap())
             .with_position(vec2(cx - offset + sway, cy + sway_y))
             .with_scale(vec2(size, size))
             .with_color(Color { r: 1.0, g: 0.2, b: 0.2, a: 0.6 })
             .with_z_index(0);
 
         // Sprite B — blue, top-right of center, z = 1 (drawn on top).
-        let _sprite_b = Sprite::new(self.color_material.unwrap().into_generic())
+        let _sprite_b = Sprite::new(self.sprite_material.unwrap())
             .with_position(vec2(cx + offset + sway, cy + sway_y))
             .with_scale(vec2(size, size))
             .with_color(Color { r: 0.2, g: 0.3, b: 1.0, a: 0.6 })
             .with_z_index(1);
 
-        let _sprite_tree = Sprite::new(self.tree_material.unwrap().into_generic())
+        let _sprite_tree = Sprite::new(self.tree_material.unwrap())
             .with_position(vec2((cx + offset + sway) * 0.5, cy - offset + sway_y))
             .with_scale(vec2(size, size))
             .with_angle((total_time * 0.5).into());
+
+        // Circle — green, animated position, z = 2.
+        let _circle = ShapeInstance::<CircleShape>::new(self.circle_material.unwrap())
+            .with_position(vec2(cx + sway * 2.0, cy + sway_y * 2.0))
+            .with_scale(vec2(80.0, 80.0))
+            .with_color(Color { r: 0.2, g: 0.9, b: 0.3, a: 1.0 })
+            .with_z_index(2);
 
         let sprite_atlas = self.sprite_atlas.as_ref().unwrap();
         let sprite = match sprite_atlas.sprite(self.sprite_index) {
@@ -171,10 +185,11 @@ impl ApplicationProxy for App {
         let commander = target.commander(environment);
 
         let mut renderer = Render2D::begin_scene(commander);
-        renderer.draw(_sprite_a);
-        renderer.draw(_sprite_b);
-        renderer.draw(_sprite_tree);
-        renderer.draw(character);
+        renderer.draw(&_sprite_a);
+        renderer.draw(&_sprite_b);
+        renderer.draw(&_sprite_tree);
+        renderer.draw(&_circle);
+        renderer.draw(&character);
         renderer.end_scene(RenderPassDescriptor::new(), &ctx.assets_manager);
     }
 }

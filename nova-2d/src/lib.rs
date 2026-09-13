@@ -6,5 +6,6 @@ pub mod camera;
 pub mod plugin;
 pub mod defaults;
 pub mod instance;
+pub mod shape;
 pub mod sprite;
 pub mod materials;

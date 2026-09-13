@@ -23,7 +23,7 @@ use nova::{
     nova2d::{
         camera::Camera2D,
         defaults::Nova2dDefaults,
-        materials::{ColorMaterial, SpriteMaterial},
+        materials::SpriteMaterial,
         render2d::Render2D,
         sprite::Sprite,
         utils::RectF32,
@@ -120,7 +120,7 @@ impl QuadArchetype {
 pub struct AppProxy {
     // Materials — one per visual "kind" so the batcher produces multiple
     // draw batches (testing multi-batch / multi-draw-call performance).
-    flat_material: Option<Handle<ColorMaterial>>,
+    flat_material: Option<Handle<SpriteMaterial>>,
     checker_red_material: Option<Handle<SpriteMaterial>>,
     checker_green_material: Option<Handle<SpriteMaterial>>,
 
@@ -178,18 +178,18 @@ impl AppProxy {
                     2 => Color::MAGENTA,
                     _ => Color::RED,
                 };
-                (self.flat_material.unwrap().into_generic(), color, full_uv())
+                (self.flat_material.unwrap(), color, full_uv())
             }
             QuadArchetype::Textured | QuadArchetype::RotatedTextured => {
-                (self.checker_red_material.unwrap().into_generic(), Color::WHITE, full_uv())
+                (self.checker_red_material.unwrap(), Color::WHITE, full_uv())
             }
             QuadArchetype::TexturedTinted => {
-                (self.checker_red_material.unwrap().into_generic(), Color::GREEN, full_uv())
+                (self.checker_red_material.unwrap(), Color::GREEN, full_uv())
             }
             QuadArchetype::RotatedSubUv => {
                 // Sub-rect UV: use only the top-left quadrant of the texture.
                 (
-                    self.checker_green_material.unwrap().into_generic(),
+                    self.checker_green_material.unwrap(),
                     Color::YELLOW,
                     RectF32 {
                         top: 0.0,
@@ -336,11 +336,11 @@ fn full_uv() -> RectF32 {
 
 impl ApplicationProxy for AppProxy {
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()> {
-        // The flat-color material is the plugin's default ColorMaterial.
-        // Vertex color modulation gives per-sprite color variety.
+        // The flat-color material is the plugin's default SpriteMaterial
+        // (white texture). Per-instance color provides flat-color rendering.
         self.flat_material = Some(
             ctx.default_assets
-                .expect::<ColorMaterial>(Nova2dDefaults::DefaultColorMaterial),
+                .expect::<SpriteMaterial>(Nova2dDefaults::DefaultSpriteMaterial),
         );
 
         // Create two checkerboard textures for the textured/tinted variants.
@@ -409,7 +409,7 @@ impl ApplicationProxy for AppProxy {
         let count = self.quad_count;
         let cache = &self.sprite_cache;
         for i in 0..count {
-            renderer.draw(cache[i].clone());
+            renderer.draw(&cache[i]);
         }
         let draw_elapsed = draw_start.elapsed();
 

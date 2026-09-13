@@ -1,6 +1,9 @@
-use nova_core::{assets::AssetsManager, graphics::{render_pass::RenderPassDescriptor, render_target::RenderTargetCommander}};
+use nova_core::{
+    assets::AssetsManager,
+    graphics::{render_pass::RenderPassDescriptor, render_target::RenderTargetCommander},
+};
 
-use crate::{batcher::Batcher2D, sprite::Sprite};
+use crate::{batcher::Batcher2D, shape::{Shape2D, ShapeInstance}};
 
 pub struct Render2D<'a> {
     commander: RenderTargetCommander<'a>,
@@ -20,11 +23,16 @@ impl<'a> Render2D<'a> {
         self.batcher.reserve(hint);
     }
 
-    pub fn draw(&mut self, sprite: Sprite) {
-        self.batcher.add_sprite(sprite);
+    /// Draws a shape instance. The shape type `S` determines the instance
+    /// data layout and geometry; the material handle must be compatible
+    /// with `S::Material`.
+    pub fn draw<S: Shape2D>(&mut self, instance: &ShapeInstance<S>) {
+        let data = instance.build();
+        self.batcher.add::<S>(instance.material.into_generic(), &data, instance.z_index);
     }
 
     pub fn end_scene(self, pass_descriptor: RenderPassDescriptor, assets: &AssetsManager) {
-        self.commander.submit_batches(pass_descriptor, self.batcher.into_iter(), assets);
+        self.commander
+            .submit_batches(pass_descriptor, self.batcher.into_iter(), assets);
     }
 }
