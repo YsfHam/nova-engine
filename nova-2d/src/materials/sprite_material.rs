@@ -50,7 +50,7 @@ impl Material for SpriteMaterial {
     fn template() -> MaterialTemplate {
         MaterialTemplate {
             shader: ShaderInfo {
-                source: ShaderSource::Inline(include_str!("../../assets/shader.wgsl").to_string()),
+                source: ShaderSource::Inline(include_str!("../../assets/sprite_shader.wgsl").to_string()),
                 entry_point: ShaderEntryPoint::Both {
                     vs_entry_point: "vs_main".into(),
                     fs_entry_point: "fs_main".into(),

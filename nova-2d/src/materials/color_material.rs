@@ -38,7 +38,7 @@ impl Material for ColorMaterial {
     fn template() -> MaterialTemplate {
         MaterialTemplate {
             shader: ShaderInfo {
-                source: ShaderSource::Inline(include_str!("../../assets/color_shader.wgsl").to_string()),
+                source: ShaderSource::Inline(include_str!("../../assets/rectangle_shader.wgsl").to_string()),
                 entry_point: ShaderEntryPoint::Both {
                     vs_entry_point: "vs_main".into(),
                     fs_entry_point: "fs_main".into(),
