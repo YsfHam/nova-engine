@@ -10,4 +10,6 @@ pub mod math;
 pub mod mem;
 pub mod plugin;
 
+pub mod egui;
+
 pub type EngineResult<T> = Result<T, EngineError>;

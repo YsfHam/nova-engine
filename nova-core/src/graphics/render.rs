@@ -152,31 +152,7 @@ impl RenderContextRef {
         vertices: &[u8],
         indices: &[u16],
     ) -> crate::graphics::geometry::GeometryRef {
-        let mut ctx = self.inner.borrow_mut();
-        let RenderContext {
-            gfx,
-            geometry_pool,
-            command_buffers,
-            ..
-        } = &mut *ctx;
-        let device = &gfx.device;
-        let queue = &gfx.queue;
-        let mut encoder = device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let geo = geometry_pool.insert(
-            vertices,
-            indices,
-            device,
-            queue,
-            &mut encoder,
-        );
-        // Submit the encoder (may contain buffer resize copies).
-        if let Some(buffers) = command_buffers.as_mut() {
-            buffers.push(encoder.finish());
-            let cmd_buffers = std::mem::take(buffers);
-            gfx.queue.submit(cmd_buffers);
-        }
-        geo
+        self.inner.borrow_mut().insert_geometry(vertices, indices)
     }
 }
 
@@ -292,5 +268,36 @@ impl RenderContext {
                 Ok(None)
             }
         }
+    }
+
+
+    /// Inserts shared geometry into the persistent [`GeometryPool`] and
+    /// returns a [`GeometryRef`] that can be used in
+    /// [`DrawBatch::with_shared_geometry`](crate::graphics::draw_batch::DrawBatch::with_shared_geometry).
+    ///
+    /// The geometry is uploaded immediately and its offsets are permanent.
+    /// Call this once (at init, when a mesh loads, etc.) — not per frame.
+    pub fn insert_geometry(
+        &mut self,
+        vertices: &[u8],
+        indices: &[u16],
+    ) -> crate::graphics::geometry::GeometryRef {
+
+        let mut encoder = 
+            self
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        let geo = self.geometry_pool.insert(
+            vertices,
+            indices,
+            &self.gfx.device,
+            &self.gfx.queue,
+            &mut encoder,
+        );
+
+        self.submit_command_encoder(encoder);
+
+        geo
     }
 }

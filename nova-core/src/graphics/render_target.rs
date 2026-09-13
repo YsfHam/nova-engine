@@ -22,7 +22,7 @@ use crate::{
 /// [`RenderTargetCommander`] can return references whose lifetime is tied to
 /// the `RenderTarget` borrow — no nested `RefCell` borrows are needed.
 pub struct RenderTarget<'a> {
-    render_ctx: RefMut<'a, RenderContext>,
+    pub(crate) render_ctx: RefMut<'a, RenderContext>,
     pub(crate) view: &'a wgpu::TextureView,
     pub(crate) encoder: Option<wgpu::CommandEncoder>,
     uniform_buffer: UniformBuffer,

@@ -37,8 +37,15 @@ impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
 impl<P: ApplicationProxy> Application<P> {
     fn process_events(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) -> EngineResult<()> {
 
+        
         let ctx = self.ctx.as_mut().unwrap();
         let proxy = &mut self.proxy;
+
+
+        let response = ctx.egui_state.on_event(&event);
+        if response.consumed {
+            return Ok(());
+        }
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -69,18 +76,17 @@ impl<P: ApplicationProxy> Application<P> {
         }
     }
 
-    fn on_render(proxy: &mut P, ctx: &ApplicationContext) -> EngineResult<()> {
-        // begin_frame borrows the RefCell mutably, returns a Frame that owns
-        // the surface texture + view (no borrow of the RefCell). Guard drops.
+    fn on_render(proxy: &mut P, ctx: &mut ApplicationContext) -> EngineResult<()> {
+
         let frame_opt = ctx.render_ctx.get_mut().begin_frame()?;
 
         if let Some(mut frame) = frame_opt {
-            // The proxy records commands: it creates a RenderTarget (holding
-            // a RefMut guard) from the frame, records via its commander, and
-            // submits (consuming the target + dropping the guard).
+
             proxy.on_render(ctx, &mut frame);
-            // The RefMut guard is dropped by now; present uses a fresh
-            // immutable borrow to access the queue.
+
+            ctx.egui_state.new_frame();
+            proxy.on_gui(ctx.egui_state.context());
+            ctx.egui_state.submit_frame(frame.render_target(&ctx.render_ctx));   
 
             ctx.render_ctx.get_mut().submit_commands();
             frame.present(&ctx.render_ctx);

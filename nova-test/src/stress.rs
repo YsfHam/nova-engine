@@ -434,6 +434,10 @@ impl ApplicationProxy for AppProxy {
             self.last_stats_frame = self.frame_counter;
         }
     }
+    
+    fn on_gui(&mut self, _ctx: &nova::egui::Context) {
+        todo!()
+    }
 }
 
 /// Entry point for the stress-test binary.

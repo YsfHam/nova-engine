@@ -7,13 +7,15 @@ mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef}, plugin::Plugins, time::Clock, window::WindowApi};
+use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef}, plugin::Plugins, time::Clock, window::WindowApi};
 
 pub struct ApplicationContext {
     pub window_api: WindowApi,
     pub render_ctx: RenderContextRef,
     pub assets_manager: AssetsManager,
     pub default_assets: DefaultAssets,
+
+    pub(crate) egui_state: EguiState,
 }
 
 impl ApplicationContext {
@@ -26,6 +28,7 @@ pub trait ApplicationProxy {
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()>;
     fn on_update(&mut self, ctx: &mut ApplicationContext, dt: Duration);
     fn on_render(&mut self, ctx: &ApplicationContext, frame: &mut Frame);
+    fn on_gui(&mut self, ctx: &egui::Context);
 }
 
 pub struct Application<P: ApplicationProxy> {
@@ -78,6 +81,8 @@ impl<P: ApplicationProxy> Application<P> {
         let gfx = GraphicsContext::new(window_api.window.clone(), self.gfx_config)?;
         let render_ctx = RenderContextRef::new(gfx);
 
+        let egui_state = EguiState::new(&render_ctx.get(), window_api.window.clone());
+
         let assets_manager = AssetsManager::new();
 
         let default_assets = DefaultAssets::new();
@@ -87,6 +92,8 @@ impl<P: ApplicationProxy> Application<P> {
             render_ctx,
             assets_manager,
             default_assets,
+
+            egui_state
         };
 
         self.plugins.init(&mut app_ctx)?;

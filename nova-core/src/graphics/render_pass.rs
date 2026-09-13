@@ -18,7 +18,7 @@ impl RenderPassDescriptor {
     pub fn new() -> Self {
         Self {
             label: None,
-            color_clear: Some(Color::BLACK),
+            color_clear: None,
             depth_clear: None,
         }
     }
