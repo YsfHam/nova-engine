@@ -100,8 +100,10 @@ impl<P: ApplicationProxy> Application<P> {
 
     #[cfg(feature = "egui")]
     fn egui_render(proxy: &mut P, ctx: &mut ApplicationContext, frame: &mut Frame) {
-        ctx.egui_state.new_frame();
-        proxy.on_gui(ctx.egui_state.context());
-        ctx.egui_state.submit_frame(frame.render_target(&ctx.render_ctx));  
+
+        let render_target = frame.render_target(&ctx.render_ctx);
+        ctx.egui_state.ui(render_target, |ui| {
+            proxy.on_gui(ui);
+        });
     }
 }

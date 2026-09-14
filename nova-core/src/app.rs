@@ -29,7 +29,7 @@ pub trait ApplicationProxy {
     fn on_update(&mut self, ctx: &mut ApplicationContext, dt: Duration);
     fn on_render(&mut self, ctx: &ApplicationContext, frame: &mut Frame);
     #[cfg(feature = "egui")]
-    fn on_gui(&mut self, ctx: &egui::Context);
+    fn on_gui(&mut self, ui: &mut egui::Ui);
 }
 
 pub struct Application<P: ApplicationProxy> {

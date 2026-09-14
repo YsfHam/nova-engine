@@ -6,6 +6,8 @@ use crate::graphics::{render::RenderContext, render_pass::{RenderPass, RenderPas
 
 #[cfg(feature = "egui")]
 pub use egui;
+#[cfg(feature = "egui")]
+pub use egui::Ui;
 
 #[cfg(feature = "egui")]
 pub(crate) struct EguiState {
@@ -44,21 +46,17 @@ impl EguiState {
         }
     }
 
-    pub(crate) fn context(&self) -> &egui::Context {
-        self.state.egui_ctx()
-    }
-
     pub(crate) fn on_event(&mut self, event: &WindowEvent) -> egui_winit::EventResponse {
         self.state.on_window_event(&self.window, event)
     }
 
-    pub(crate) fn new_frame(&mut self) {
+    pub(crate) fn ui(
+        &mut self, 
+        mut render_target: RenderTarget<'_>, 
+        run_ui: impl FnMut(&mut Ui)
+    ) {
         let input = self.state.take_egui_input(&self.window);
-        self.state.egui_ctx().begin_pass(input);
-    }
-
-    pub(crate) fn submit_frame(&mut self, mut render_target: RenderTarget<'_>) {
-        let full_output = self.state.egui_ctx().end_pass();
+        let full_output = self.state.egui_ctx().run_ui(input, run_ui);
         self.state.handle_platform_output(&self.window, full_output.platform_output);
         let tesselated = self.state.egui_ctx().tessellate(full_output.shapes, full_output.pixels_per_point);
         let render_ctx = &render_target.render_ctx;
@@ -89,6 +87,5 @@ impl EguiState {
         for tex in &full_output.textures_delta.free {
             self.renderer.free_texture(tex);
         }
-
     }
 }

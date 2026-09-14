@@ -13,7 +13,7 @@ use nova::{
             texture::{Texture, TextureConfig},
             uniform::UniformValue,
         }, math::vec2, time::Clock, window::LogicalSize,
-    }, egui, nova2d::{
+    }, nova2d::{
         camera::Camera2D,
         defaults::Nova2dDefaults,
         materials::{CircleMaterial, SpriteMaterial},
@@ -192,13 +192,6 @@ impl ApplicationProxy for App {
         renderer.draw(&_circle);
         renderer.end_scene(RenderPassDescriptor::new().with_color_clear(Color::YELLOW), &ctx.assets_manager);
 
-    }
-    
-    fn on_gui(&mut self, ctx: &nova::egui::Context) {
-        egui::Window::new("Testing")
-        .show(ctx, |ui| {
-            ui.button("Click me!")
-        }); 
     }
 }
 
