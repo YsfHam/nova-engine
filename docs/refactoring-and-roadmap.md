@@ -25,15 +25,15 @@ Applications calling `.with_power_preference(wgpu::PowerPreference::LowPower)` d
 
 **Tasks**:
 
-- [ ] Create engine-native enums in `nova-core/src/graphics/config.rs`:
+- [x] Create engine-native enums in `nova-core/src/graphics/config.rs`:
   - `PowerPreference { LowPower, HighPerformance, None }`
   - `PresentMode { AutoVsync, AutoNoVsync, Mailbox, Fifo, FifoRelaxed }`
   - `CompositeAlphaMode { Auto, Opaque, PreMultiplied, PostMultiplied, Inherit }`
-- [ ] Implement `From<EngineEnum> for wgpu::Enum` for each.
-- [ ] Update `GraphicsConfiguration` fields to use the engine-native enums.
-- [ ] Update builder methods (`with_power_preference`, `with_present_mode`, `with_alpha_mode`) to take engine-native types.
-- [ ] Update `GraphicsContext::create_surface_config` to convert via `Into`.
-- [ ] Update all call sites (nova-test, nova-editor) to use engine-native enums.
+- [x] Implement `From<EngineEnum> for wgpu::Enum` for each.
+- [x] Update `GraphicsConfiguration` fields to use the engine-native enums.
+- [x] Update builder methods (`with_power_preference`, `with_present_mode`, `with_alpha_mode`) to take engine-native types.
+- [x] Update `GraphicsContext::create_surface_config` to convert via `Into`.
+- [x] Update all call sites (nova-test, nova-editor) to use engine-native enums.
 
 **Files affected**:
 - `nova-core/src/graphics/config.rs` — new enums + updated struct
@@ -49,7 +49,7 @@ Applications calling `.with_power_preference(wgpu::PowerPreference::LowPower)` d
 
 **Tasks**:
 
-- [ ] Create `nova-core/src/app.rs` (or a new `nova-core/src/app/control_flow.rs`):
+- [x] Create `nova-core/src/app.rs` (or a new `nova-core/src/app/control_flow.rs`:
   ```rust
   pub enum ControlFlow {
       Poll,
@@ -57,10 +57,10 @@ Applications calling `.with_power_preference(wgpu::PowerPreference::LowPower)` d
       WaitUntil(Duration),
   }
   ```
-- [ ] Implement `From<ControlFlow> for winit::event_loop::ControlFlow`.
-- [ ] Update `ApplicationBuilder::with_control_flow` to take the engine-native type.
-- [ ] Update `Application` struct field and handler logic to convert at the boundary.
-- [ ] Update all call sites.
+- [x] Implement `From<ControlFlow> for winit::event_loop::ControlFlow`.
+- [x] Update `ApplicationBuilder::with_control_flow` to take the engine-native type.
+- [x] Update `Application` struct field and handler logic to convert at the boundary.
+- [x] Update all call sites.
 
 **Files affected**:
 - `nova-core/src/app.rs` or `nova-core/src/app/control_flow.rs` — new enum
@@ -75,7 +75,7 @@ Applications calling `.with_power_preference(wgpu::PowerPreference::LowPower)` d
 
 **Tasks**:
 
-- [ ] Create `nova-core/src/window.rs`:
+- [x] Create `nova-core/src/window.rs`:
   ```rust
   pub struct WindowConfig {
       pub title: String,
@@ -88,11 +88,11 @@ Applications calling `.with_power_preference(wgpu::PowerPreference::LowPower)` d
   }
   ```
   with a `Default` and builder-style methods (`with_title`, `with_inner_size`, etc.).
-- [ ] Implement `From<WindowConfig> for winit::window::WindowAttributes`.
-- [ ] Add `ApplicationBuilder::window_config(WindowConfig)` replacing `alter_window_attributes`.
+- [x] Implement `From<WindowConfig> for winit::window::WindowAttributes`.
+- [x] Add `ApplicationBuilder::window_config(WindowConfig)` replacing `alter_window_attributes`.
   - Keep `alter_window_attributes` as `pub(crate)` or remove it if no internal callers remain.
-- [ ] Keep `LogicalSize` and `PhysicalSize` re-exports (already in `window.rs`).
-- [ ] Update all call sites (nova-test, nova-editor, stress test).
+- [x] Keep `LogicalSize` and `PhysicalSize` re-exports (already in `window.rs`).
+- [x] Update all call sites (nova-test, nova-editor, stress test).
 
 **Files affected**:
 - `nova-core/src/window.rs` — new `WindowConfig` struct + `From` impl
@@ -111,10 +111,10 @@ Applications calling `.with_power_preference(wgpu::PowerPreference::LowPower)` d
 
 **Tasks**:
 
-- [ ] Add `From<wgpu::TextureFormat> for TextureFormat` in `texture.rs` — covers all variants in the engine enum, fallback to `Bgra8UnormSrgb`.
-- [ ] Update `surface_format()` to use `.into()`.
-- [ ] Update `register_texture()` to use `FilterMode::into()` (the `From<FilterMode> for wgpu::FilterMode` impl already exists in `sampler.rs`).
-- [ ] Update `EguiState::register_texture` to take engine-native `FilterMode` instead of `wgpu::FilterMode`.
+- [x] Add `From<wgpu::TextureFormat> for TextureFormat` in `texture.rs` — covers all variants in the engine enum, fallback to `Bgra8UnormSrgb`.
+- [x] Update `surface_format()` to use `.into()`.
+- [x] Update `register_texture()` to use `FilterMode::into()` (the `From<FilterMode> for wgpu::FilterMode` impl already exists in `sampler.rs`).
+- [x] Update `EguiState::register_texture` to take engine-native `FilterMode` instead of `wgpu::FilterMode`.
 
 **Files affected**:
 - `nova-core/src/graphics/texture.rs` — add `From<wgpu::TextureFormat>`
@@ -129,11 +129,11 @@ Applications calling `.with_power_preference(wgpu::PowerPreference::LowPower)` d
 
 **Tasks**:
 
-- [ ] Audit all public API signatures in `nova-core/src/graphics/` for `wgpu::` types.
-- [ ] For `RenderTarget::new` — it takes `&wgpu::TextureView`. This is called internally by `Frame::render_target` and `TextureRenderTarget::as_render_target`. Make it `pub(crate)` since external code should use those wrapper methods.
-- [ ] For `TextureRenderTarget::view()` — returns `&wgpu::TextureView`. This is used by `EguiState::register_texture` (pub(crate)). Make it `pub(crate)`.
-- [ ] For `TextureRenderTarget::texture()` — returns `&wgpu::Texture`. Currently unused externally. Make it `pub(crate)`.
-- [ ] Verify no app-facing API exposes wgpu types after these changes.
+- [x] Audit all public API signatures in `nova-core/src/graphics/` for `wgpu::` types.
+- [x] For `RenderTarget::new` — it takes `&wgpu::TextureView`. This is called internally by `Frame::render_target` and `TextureRenderTarget::as_render_target`. Make it `pub(crate)` since external code should use those wrapper methods.
+- [x] For `TextureRenderTarget::view()` — returns `&wgpu::TextureView`. This is used by `EguiState::register_texture` (pub(crate)). Make it `pub(crate)`.
+- [x] For `TextureRenderTarget::texture()` — returns `&wgpu::Texture`. Currently unused externally. Make it `pub(crate)`.
+- [x] Verify no app-facing API exposes wgpu types after these changes.
 
 **Files affected**:
 - `nova-core/src/graphics/render_target.rs` — tighten visibility
@@ -165,42 +165,42 @@ Complete R1–R5 before any new features. These are prerequisites for clean API 
 
 #### 1.1 Input state tracking
 
-- [ ] Create `nova-core/src/input.rs` module.
-- [ ] Define `InputState` struct:
+- [x] Create `nova-core/src/input.rs` module.
+- [x] Define `InputState` struct:
   - `keyboard: HashMap<KeyCode, ElementState>` — current key states.
   - `mouse_position: Vec2` — logical pixel position.
   - `mouse_buttons: [ElementState; 3]` — left, right, middle.
   - `mouse_delta: Vec2` — movement since last frame.
   - `scroll_delta: f32` — vertical scroll amount.
   - `text_input: String` — accumulated text since last frame.
-- [ ] Define engine-native `KeyCode` enum (mirror of `winit::event::KeyCode` — only the keys we need, extensible).
-- [ ] Define engine-native `ElementState { Pressed, Released }`.
-- [ ] Define engine-native `MouseButton { Left, Right, Middle, Other(u16) }`.
-- [ ] Implement `From<winit::event::KeyCode>` and `From<winit::event::ElementState>` etc.
-- [ ] `InputState::new()` — empty state.
-- [ ] `InputState::process_event(&mut self, event: &WindowEvent)` — update state from winit events.
-- [ ] `InputState::begin_frame(&mut self)` — clear per-frame deltas (mouse_delta, scroll_delta, text_input).
-- [ ] `InputState::is_key_down(&self, key: KeyCode) -> bool`.
-- [ ] `InputState::is_mouse_button_down(&self, button: MouseButton) -> bool`.
-- [ ] `InputState::mouse_position(&self) -> Vec2`.
+- [x] Define engine-native `KeyCode` enum (mirror of `winit::event::KeyCode` — only the keys we need, extensible).
+- [x] Define engine-native `ElementState { Pressed, Released }`.
+- [x] Define engine-native `MouseButton { Left, Right, Middle, Other(u16) }`.
+- [x] Implement `From<winit::event::KeyCode>` and `From<winit::event::ElementState>` etc.
+- [x] `InputState::new()` — empty state.
+- [x] `InputState::process_event(&mut self, event: &WindowEvent)` — update state from winit events.
+- [x] `InputState::begin_frame(&mut self)` — clear per-frame deltas (mouse_delta, scroll_delta, text_input).
+- [x] `InputState::is_key_down(&self, key: KeyCode) -> bool`.
+- [x] `InputState::is_mouse_button_down(&self, button: MouseButton) -> bool`.
+- [x] `InputState::mouse_position(&self) -> Vec2`.
 
 #### 1.2 Input integration in event loop
 
-- [ ] Add `input_state: InputState` field to `ApplicationContext`.
-- [ ] In `handler.rs::process_events`: call `input_state.process_event(&event)` for all events (before egui, after egui for unconsumed events).
-- [ ] In `handler.rs::on_render` (or `on_update`): call `input_state.begin_frame()` at the start of each frame.
-- [ ] Expose `InputState` via `ApplicationContext` (public field or accessor).
+- [x] Add `input_state: InputState` field to `ApplicationContext`.
+- [x] In `handler.rs::process_events`: call `input_state.process_event(&event)` for all events (before egui, after egui for unconsumed events).
+- [x] In `handler.rs::on_render` (or `on_update`): call `input_state.begin_frame()` at the start of each frame.
+- [x] Expose `InputState` via `ApplicationContext` (public field or accessor).
 
 #### 1.3 Input access in ApplicationProxy
 
-- [ ] `ApplicationContext` exposes `&InputState` (read-only in `on_render`, read-only in `on_update`).
-- [ ] `ApplicationContext` exposes `&mut InputState` in `on_update` for apps that want to consume events.
+- [x] `ApplicationContext` exposes `&InputState` (read-only in `on_render`, read-only in `on_update`).
+- [x] `ApplicationContext` exposes `&mut InputState` in `on_update` for apps that want to consume events.
 
 #### 1.4 Egui + input coexistence
 
-- [ ] After egui processes an event, check `egui::Context::wants_pointer_input()` / `wants_keyboard_input()`.
-- [ ] If egui wants the event, don't forward it to `InputState` (the game/editor viewport shouldn't receive UI clicks).
-- [ ] If egui doesn't want it, forward to `InputState` normally.
+- [x] After egui processes an event, check `egui::Context::wants_pointer_input()` / `wants_keyboard_input()`.
+- [x] If egui wants the event, don't forward it to `InputState` (the game/editor viewport shouldn't receive UI clicks).
+- [x] If egui doesn't want it, forward to `InputState` normally.
 
 ---
 
