@@ -80,7 +80,7 @@ impl GraphicsContext {
 
     async fn create_adapter(instance:wgpu::Instance, surface: &wgpu::Surface<'_>, gfx_config: &GraphicsConfiguration) -> EngineResult<wgpu::Adapter> {
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: gfx_config.power_preference,
+            power_preference: gfx_config.power_preference.into(),
             force_fallback_adapter: false,
             compatible_surface: Some(surface),
             apply_limit_buckets: false,
@@ -116,8 +116,8 @@ impl GraphicsContext {
             format: surface_format,
             width,
             height,
-            present_mode: gfx_config.present_mode,
-            alpha_mode: gfx_config.alpha_mode,
+            present_mode: gfx_config.present_mode.into(),
+            alpha_mode: gfx_config.alpha_mode.into(),
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
             color_space: wgpu::SurfaceColorSpace::Auto,
