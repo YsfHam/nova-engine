@@ -252,9 +252,9 @@ fn main() -> EngineResult<()> {
     println!("=== Nova Engine — Editor ===");
 
     ApplicationBuilder::new(EditorApp::new())
-        .alter_window_attributes(|attr| {
-            attr.with_inner_size(nova::core::window::LogicalSize::new(800, 600))
-                .with_title("Nova Editor")
+        .alter_window_attributes(|config| {
+            config.with_size((1000, 800))
+            .with_title("Nova editor")
         })
         .with_plugins(DefaultPlugins)
         .build()

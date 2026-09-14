@@ -1,9 +1,8 @@
-use winit::{window::{Window, WindowAttributes}};
 
-use crate::{app::{Application, ApplicationProxy}, graphics::config::GraphicsConfiguration, plugin::{Plugin, Plugins, PluginsGroup}, window::ControlFlow};
+use crate::{app::{Application, ApplicationProxy}, graphics::config::GraphicsConfiguration, plugin::{Plugin, Plugins, PluginsGroup}, window::{ControlFlow, WindowConfig}};
 
 pub struct ApplicationBuilder<P: ApplicationProxy> {
-    pub(crate) window_attributes: WindowAttributes,
+    pub(crate) window_config: WindowConfig,
     pub(crate) gfx_config: GraphicsConfiguration,
     pub(crate) control_flow: ControlFlow,
     pub(crate) proxy: P,
@@ -14,7 +13,7 @@ pub struct ApplicationBuilder<P: ApplicationProxy> {
 impl<P: ApplicationProxy> ApplicationBuilder<P> {
     pub fn new(proxy: P) -> Self {
         Self {
-            window_attributes: Window::default_attributes(),
+            window_config: WindowConfig::default(),
             gfx_config: GraphicsConfiguration::default(),
             control_flow: ControlFlow::Poll,
             proxy,
@@ -23,8 +22,8 @@ impl<P: ApplicationProxy> ApplicationBuilder<P> {
         }
     }
 
-    pub fn alter_window_attributes(mut self, alter_func: impl FnOnce(WindowAttributes) -> WindowAttributes) -> Self {
-        self.window_attributes = alter_func(self.window_attributes);
+    pub fn alter_window_attributes(mut self, alter_func: impl FnOnce(WindowConfig) -> WindowConfig) -> Self {
+        self.window_config = alter_func(self.window_config);
         self
     }
 

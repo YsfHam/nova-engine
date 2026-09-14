@@ -1,13 +1,13 @@
 use std::time::Duration;
 
-use winit::{event_loop::{ActiveEventLoop, EventLoop}, window::WindowAttributes};
+use winit::event_loop::{ActiveEventLoop, EventLoop};
 
 mod handler;
 mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef, render_target::TextureRenderTarget}, plugin::Plugins, time::Clock, window::{ControlFlow, WindowApi}};
+use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef, render_target::TextureRenderTarget}, plugin::Plugins, time::Clock, window::{ControlFlow, WindowApi, WindowConfig}};
 
 pub struct ApplicationContext {
     pub window_api: WindowApi,
@@ -87,7 +87,7 @@ pub trait ApplicationProxy {
 }
 
 pub struct Application<P: ApplicationProxy> {
-    window_attributes: WindowAttributes,
+    window_config: WindowConfig,
     gfx_config: GraphicsConfiguration,
     proxy: P,
     control_flow: ControlFlow,
@@ -113,7 +113,7 @@ impl<P: ApplicationProxy> Application<P> {
 
     fn from_builder(builder: ApplicationBuilder<P>) -> Self {
         Self {
-            window_attributes: builder.window_attributes,
+            window_config: builder.window_config,
             gfx_config: builder.gfx_config,
             proxy: builder.proxy,
             control_flow: builder.control_flow,
@@ -126,13 +126,13 @@ impl<P: ApplicationProxy> Application<P> {
     }
 
     fn init(&mut self, event_loop: &ActiveEventLoop) -> EngineResult<()> {
-        let window_visible= self.window_attributes.visible;
+        let window_visible= self.window_config.visible;
 
-        let window_attributes = 
-            self.window_attributes.clone()
+        let window_config = 
+            self.window_config.clone()
             .with_visible(false)
         ;
-        let window_api = WindowApi::new(event_loop, window_attributes)?;
+        let window_api = WindowApi::new(event_loop, window_config)?;
         let gfx = GraphicsContext::new(window_api.window.clone(), self.gfx_config)?;
         let render_ctx = RenderContextRef::new(gfx);
         #[cfg(feature = "egui")]
