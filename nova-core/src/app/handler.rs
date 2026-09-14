@@ -1,11 +1,11 @@
 
 use std::time::{Duration, Instant};
 
-use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, ControlFlow}};
+use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop}};
 
 #[cfg(feature = "egui")]
 use crate::graphics::frame::Frame;
-use crate::{EngineResult, app::{Application, ApplicationContext, ApplicationProxy}};
+use crate::{EngineResult, app::{Application, ApplicationContext, ApplicationProxy}, window::ControlFlow};
 
 impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -59,7 +59,7 @@ impl<P: ApplicationProxy> Application<P> {
                 Self::on_render(proxy, ctx)?;
 
                 if self.control_flow == ControlFlow::Poll {
-                    event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + self.frame_time));
+                    event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(Instant::now() + self.frame_time));
                 }
             }
 

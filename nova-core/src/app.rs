@@ -1,13 +1,13 @@
 use std::time::Duration;
 
-use winit::{event_loop::{ActiveEventLoop, ControlFlow, EventLoop}, window::WindowAttributes};
+use winit::{event_loop::{ActiveEventLoop, EventLoop}, window::WindowAttributes};
 
 mod handler;
 mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef, render_target::TextureRenderTarget}, plugin::Plugins, time::Clock, window::WindowApi};
+use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef, render_target::TextureRenderTarget}, plugin::Plugins, time::Clock, window::{ControlFlow, WindowApi}};
 
 pub struct ApplicationContext {
     pub window_api: WindowApi,
@@ -102,7 +102,7 @@ pub struct Application<P: ApplicationProxy> {
 impl<P: ApplicationProxy> Application<P> {
     pub fn run(mut self) -> EngineResult<()> {
         let event_loop = EventLoop::new().unwrap();
-        event_loop.set_control_flow(self.control_flow);
+        event_loop.set_control_flow(self.control_flow.into());
 
         event_loop.run_app(&mut self).unwrap();
         match self.engine_error {

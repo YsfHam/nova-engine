@@ -1,6 +1,6 @@
-use winit::{event_loop::ControlFlow, window::{Window, WindowAttributes}};
+use winit::{window::{Window, WindowAttributes}};
 
-use crate::{app::{Application, ApplicationProxy}, graphics::config::GraphicsConfiguration, plugin::{Plugin, Plugins, PluginsGroup}};
+use crate::{app::{Application, ApplicationProxy}, graphics::config::GraphicsConfiguration, plugin::{Plugin, Plugins, PluginsGroup}, window::ControlFlow};
 
 pub struct ApplicationBuilder<P: ApplicationProxy> {
     pub(crate) window_attributes: WindowAttributes,

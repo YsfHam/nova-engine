@@ -30,3 +30,19 @@ impl WindowApi {
         (logical.width, logical.height)
     }
 }
+
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ControlFlow {
+    Poll,
+    Wait,
+}
+
+impl From<ControlFlow> for winit::event_loop::ControlFlow {
+    fn from(value: ControlFlow) -> Self {
+        match value {
+            ControlFlow::Poll => winit::event_loop::ControlFlow::Poll,
+            ControlFlow::Wait => winit::event_loop::ControlFlow::Wait,
+        }
+    }
+}
