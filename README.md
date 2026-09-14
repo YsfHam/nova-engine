@@ -7,9 +7,10 @@ Nova is a Rust multimedia engine focused first on a correct, reusable GPU render
 | Crate | Scope |
 | --- | --- |
 | [`nova-core`](nova-core/README.md) | Application lifecycle, windows, assets, GPU resources, render targets, materials, pipelines, buffers, and math re-exports. |
-| [`nova-2d`](nova-2d/README.md) | Sprite data, atlas helpers, 2D batching, camera projection, default materials, and the 2D plugin. |
+| [`nova-2d`](nova-2d/README.md) | Shape-based 2D renderer: rectangles, circles, camera, batching, default materials, and the 2D plugin. |
 | [`nova`](nova/README.md) | Public facade that re-exports the core and 2D APIs and defines `DefaultPlugins`. |
 | [`nova-test`](nova-test/README.md) | Executable example and stress harness used to exercise the public API and renderer. |
+| [`nova-editor`](nova-editor/README.md) | Docking-based editor with off-screen scene rendering, egui integration, and animated demo. |
 
 The crates are workspace members at the repository root. `nova-2d` depends on `nova-core`; `nova` combines both; `nova-test` depends only on `nova`.
 
@@ -34,7 +35,12 @@ The current 2D path uses a shared base quad geometry and GPU-side instance data.
 ```text
 cargo check --workspace
 cargo run --release -p nova-test
+cargo run --release -p nova-editor
 ```
+
+## Refactoring & Roadmap
+
+See [`docs/refactoring-and-roadmap.md`](docs/refactoring-and-roadmap.md) for the prioritized refactoring tasks (wgpu/winit encapsulation) and detailed step-by-step execution plan for all planned features.
 
 ## Roadmap
 
