@@ -2,7 +2,7 @@ use std::{any::TypeId, cell::RefMut};
 
 use crate::{
     assets::AssetsManager, graphics::{
-        buffer::{Offset, StagingBufferPool}, draw_batch::DrawBatch, geometry::GeometryPool, material::{BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry}, pipeline::{MaterialRegistration, PipelineCache}, render::{RenderCache, RenderContext}, render_pass::{IndexFormat, RenderPass, RenderPassDescriptor}, texture::TextureFormat, uniform::UniformBuffer,
+        buffer::{Offset, StagingBufferPool}, draw_batch::DrawBatch, geometry::GeometryPool, material::{BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry}, pipeline::{MaterialRegistration, PipelineCache}, render::{RenderCache, RenderContext, RenderContextRef}, render_pass::{IndexFormat, RenderPass, RenderPassDescriptor}, texture::TextureFormat, uniform::UniformBuffer,
     },
 };
 
@@ -198,9 +198,9 @@ impl TextureRenderTarget {
     /// holding the given `RefMut<RenderContext>` guard for its lifetime.
     pub fn as_render_target<'a>(
         &'a self,
-        render_ctx: RefMut<'a, RenderContext>,
+        render_ctx: &'a RenderContextRef,
     ) -> RenderTarget<'a> {
-        RenderTarget::new(render_ctx, &self.view)
+        RenderTarget::new(render_ctx.get_mut(), &self.view)
     }
 }
 

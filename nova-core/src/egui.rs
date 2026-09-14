@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use winit::{event::WindowEvent, window::Window};
 
+#[cfg(feature = "egui")]
+use crate::graphics::sampler::FilterMode;
 use crate::graphics::{render::RenderContext, render_pass::{RenderPass, RenderPassDescriptor}, render_target::RenderTarget};
 
 #[cfg(feature = "egui")]
@@ -64,9 +66,9 @@ impl EguiState {
         &mut self,
         device: &wgpu::Device,
         view: &wgpu::TextureView,
-        filter: wgpu::FilterMode,
+        filter: FilterMode,
     ) -> EguiTextureHandle {
-        let id = self.renderer.register_native_texture(device, view, filter);
+        let id = self.renderer.register_native_texture(device, view, filter.into());
         EguiTextureHandle { id }
     }
 

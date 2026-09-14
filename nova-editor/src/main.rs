@@ -1,25 +1,11 @@
 use std::time::Duration;
 
 use nova::{
-    DefaultPlugins,
-    core::{
-        EngineResult,
-        app::{ApplicationBuilder, ApplicationContext, ApplicationProxy},
-        graphics::{
-            color::Color,
-            frame::Frame,
-            material::{BindGroup, BindGroupEntry},
-            render_pass::RenderPassDescriptor,
-            render_target::TextureRenderTarget,
-            sampler::FilterMode,
-            shader::ShaderStage,
-            uniform::UniformValue,
-        },
-        math::{Angle, vec2},
-        time::Clock,
-    },
-    egui::{self, EguiTextureHandle},
-    nova2d::{
+    DefaultPlugins, core::{
+        EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, graphics::{
+            color::Color, frame::Frame, material::{BindGroup, BindGroupEntry}, render_pass::RenderPassDescriptor, render_target::TextureRenderTarget, sampler::FilterMode, shader::ShaderStage, texture::TextureFormat, uniform::UniformValue,
+        }, math::{Angle, vec2}, time::Clock,
+    }, egui::{self, EguiTextureHandle}, nova2d::{
         camera::Camera2D,
         defaults::Nova2dDefaults,
         materials::SpriteMaterial,
@@ -106,7 +92,7 @@ impl EditorApp {
     /// Renders an animated 2D scene into the off-screen texture.
     fn render_scene(&self, ctx: &ApplicationContext) {
         let target = self.scene_target.as_ref().unwrap();
-        let mut render_target = ctx.texture_render_target(target);
+        let mut render_target = target.as_render_target(&ctx.render_ctx);
 
         let camera = Camera2D::with_size(vec2(800.0, 600.0));
 
@@ -204,7 +190,7 @@ impl EditorApp {
 impl ApplicationProxy for EditorApp {
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()> {
         // Create the off-screen texture target (800×600, same format as surface).
-        let format = ctx.surface_format();
+        let format = TextureFormat::Rgba8Unorm;
         let target = ctx.render_ctx.create_texture_target(
             800,
             600,
