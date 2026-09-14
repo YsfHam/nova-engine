@@ -38,7 +38,7 @@ impl ApplicationContext {
     ) -> crate::egui::EguiTextureHandle {
         let render_ctx = self.render_ctx.get();
         let device = render_ctx.device();
-        self.egui_state.register_texture(device, target.view(), filter)
+        self.egui_state.register_texture(device, &target.view, filter)
     }
 }
 

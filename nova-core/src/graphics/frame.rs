@@ -11,7 +11,7 @@ use crate::graphics::{render::RenderContextRef, render_target::RenderTarget};
 /// then call [`present`](Self::present) to present the surface texture.
 pub struct Frame {
     output: wgpu::SurfaceTexture,
-    view: wgpu::TextureView,
+    pub(crate) view: wgpu::TextureView,
 }
 
 impl Frame {
@@ -20,11 +20,6 @@ impl Frame {
             .texture
             .create_view(&wgpu::wgt::TextureViewDescriptor::default());
         Self { output, view }
-    }
-
-    /// The surface texture view.
-    pub fn view(&self) -> &wgpu::TextureView {
-        &self.view
     }
 
     /// Creates a `RenderTarget` bound to this frame's surface view. The

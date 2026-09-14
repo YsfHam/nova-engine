@@ -31,7 +31,7 @@ pub struct RenderTarget<'a> {
 }
 
 impl<'a> RenderTarget<'a> {
-    pub fn new(render_ctx: RefMut<'a, RenderContext>, view: &'a wgpu::TextureView) -> Self {
+    pub(crate) fn new(render_ctx: RefMut<'a, RenderContext>, view: &'a wgpu::TextureView) -> Self {
         let encoder = render_ctx.device().create_command_encoder(
             &wgpu::CommandEncoderDescriptor {
                 label: Some("RenderTarget encoder"),
@@ -148,8 +148,7 @@ impl<'a> Drop for RenderTarget<'a> {
 /// [`RenderTarget::submit`] records into the command queue; the texture's
 /// contents are available after GPU completion.
 pub struct TextureRenderTarget {
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
+    pub(crate) view: wgpu::TextureView,
 }
 
 impl TextureRenderTarget {
@@ -181,17 +180,7 @@ impl TextureRenderTarget {
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        Self { texture, view }
-    }
-
-    /// The underlying texture (e.g. to create additional views or sample it).
-    pub fn texture(&self) -> &wgpu::Texture {
-        &self.texture
-    }
-
-    /// The default texture view that the [`RenderTarget`] renders into.
-    pub fn view(&self) -> &wgpu::TextureView {
-        &self.view
+        Self { view }
     }
 
     /// Creates a [`RenderTarget`] that renders into this texture's view,
