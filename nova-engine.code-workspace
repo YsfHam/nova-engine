@@ -4,9 +4,6 @@
 		"path": "docs"
 	},
 	{
-		"path": "nova-test"
-	},
-	{
 		"path": "nova-core"
 	},
 	{
