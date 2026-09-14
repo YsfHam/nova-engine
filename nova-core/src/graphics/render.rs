@@ -196,12 +196,6 @@ impl RenderContext {
         self.gfx.resize_surface(width, height);
     }
 
-    /// Current surface texture format. Needed for pipeline compilation
-    /// (`PipelineDescriptor::target_format`).
-    pub(crate) fn surface_format(&self) -> wgpu::TextureFormat {
-        self.gfx.config.format
-    }
-
     /// Registers a material type so the renderer can resolve it by `TypeId`
     /// at draw time. Call during plugin init for each material type.
     pub fn register_material<M: crate::graphics::material::Material>(&mut self) {
@@ -215,7 +209,7 @@ impl RenderContext {
     /// This is the delegated creation path: the render context is the single
     /// responsible component for creating render-target backing textures,
     /// keeping GPU resource creation centralized.
-    pub fn create_texture_target(
+    fn create_texture_target(
         &self,
         width: u32,
         height: u32,

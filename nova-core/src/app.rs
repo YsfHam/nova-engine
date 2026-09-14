@@ -7,13 +7,15 @@ mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef, render_target::TextureRenderTarget}, plugin::Plugins, time::Clock, window::{ControlFlow, WindowApi, WindowConfig}};
+use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef, render_target::TextureRenderTarget}, input::Input, plugin::Plugins, time::Clock, window::{ControlFlow, WindowApi, WindowConfig}};
 
 pub struct ApplicationContext {
     pub window_api: WindowApi,
     pub render_ctx: RenderContextRef,
     pub assets_manager: AssetsManager,
     pub default_assets: DefaultAssets,
+
+    pub(crate) input_state: Input,
 
     pub(crate) egui_state: EguiState,
 }
@@ -23,13 +25,11 @@ impl ApplicationContext {
         self.window_api.window.request_redraw();
     }
 
-    /// Registers an off-screen render target's texture with the egui renderer
-    /// so it can be displayed inside the GUI via `ui.image()`.
-    ///
-    /// The texture target must use `TextureFormat::Rgba8Unorm` for egui
-    /// compatibility. Call this once during `on_init` after creating the
-    /// texture target, then use the returned handle's `id` with
-    /// `ui.image(egui::load::SizedTexture::new(handle.id, size))`.
+    pub fn input(&self) -> &Input {
+        &self.input_state
+    }
+
+    
     #[cfg(feature = "egui")]
     pub fn register_texture(
         &mut self,
@@ -108,12 +108,15 @@ impl<P: ApplicationProxy> Application<P> {
 
         let default_assets = DefaultAssets::new();
 
+        let input_state = Input::new(window_api.window.scale_factor());
+
         let mut app_ctx = ApplicationContext {
             window_api,
             render_ctx,
             assets_manager,
             default_assets,
 
+            input_state,
             egui_state
         };
 

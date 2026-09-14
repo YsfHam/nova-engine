@@ -9,6 +9,7 @@ pub mod assets;
 pub mod math;
 pub mod mem;
 pub mod plugin;
+pub mod input;
 
 pub mod egui;
 

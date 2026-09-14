@@ -51,12 +51,16 @@ impl<P: ApplicationProxy> Application<P> {
             }
         }
 
+        ctx.input_state.process_events(&event);
+
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::RedrawRequested => {
                 Self::on_update(proxy, ctx, self.frame_time, self.frame_clock.restart());
                 Self::on_render(proxy, ctx)?;
+
+                ctx.input_state.clear();
 
                 if self.control_flow == ControlFlow::Poll {
                     event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(Instant::now() + self.frame_time));

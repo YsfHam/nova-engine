@@ -218,7 +218,15 @@ impl ApplicationProxy for EditorApp {
         Ok(())
     }
 
-    fn on_update(&mut self, _ctx: &mut ApplicationContext, _dt: Duration) {}
+    fn on_update(&mut self, ctx: &mut ApplicationContext, _dt: Duration) {
+        let input = ctx.input();
+        if input.is_key_down('a') {
+            println!("pressing a");
+        }
+        else {
+            println!("no pressing a");
+        }
+    }
 
     fn on_render(&mut self, ctx: &ApplicationContext, _frame: &mut Frame) {
         // Render the 2D scene into the off-screen texture.

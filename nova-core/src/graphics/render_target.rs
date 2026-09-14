@@ -56,7 +56,7 @@ impl<'a> RenderTarget<'a> {
 
         let render_ctx: &mut RenderContext = &mut self.render_ctx;
         RenderTargetCommander {
-            surface_format: render_ctx.surface_format(),
+            surface_format: self.view.texture().format(),
             gpu: GpuResources {
                 device: &render_ctx.gfx.device,
                 queue: &render_ctx.gfx.queue,
