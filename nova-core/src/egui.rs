@@ -10,6 +10,13 @@ pub use egui;
 pub use egui::Ui;
 
 #[cfg(feature = "egui")]
+/// A handle to a texture registered with the egui renderer. Use this with
+/// `ui.image()` to display an off-screen render target inside the GUI.
+pub struct EguiTextureHandle {
+    pub id: egui::TextureId,
+}
+
+#[cfg(feature = "egui")]
 pub(crate) struct EguiState {
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
@@ -48,6 +55,19 @@ impl EguiState {
 
     pub(crate) fn on_event(&mut self, event: &WindowEvent) -> egui_winit::EventResponse {
         self.state.on_window_event(&self.window, event)
+    }
+
+    /// Registers a native wgpu texture view with the egui renderer and returns
+    /// a `TextureId` that can be used in `ui.image()`. The texture must have
+    /// the format `wgpu::TextureFormat::Rgba8Unorm`.
+    pub(crate) fn register_texture(
+        &mut self,
+        device: &wgpu::Device,
+        view: &wgpu::TextureView,
+        filter: wgpu::FilterMode,
+    ) -> EguiTextureHandle {
+        let id = self.renderer.register_native_texture(device, view, filter);
+        EguiTextureHandle { id }
     }
 
     pub(crate) fn ui(

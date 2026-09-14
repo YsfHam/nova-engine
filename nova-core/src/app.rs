@@ -7,7 +7,7 @@ mod builder;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef}, plugin::Plugins, time::Clock, window::WindowApi};
+use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef, render_target::TextureRenderTarget}, plugin::Plugins, time::Clock, window::WindowApi};
 
 pub struct ApplicationContext {
     pub window_api: WindowApi,
@@ -21,6 +21,60 @@ pub struct ApplicationContext {
 impl ApplicationContext {
     fn request_window_redraw(&self) {
         self.window_api.window.request_redraw();
+    }
+
+    /// Registers an off-screen render target's texture with the egui renderer
+    /// so it can be displayed inside the GUI via `ui.image()`.
+    ///
+    /// The texture target must use `TextureFormat::Rgba8Unorm` for egui
+    /// compatibility. Call this once during `on_init` after creating the
+    /// texture target, then use the returned handle's `id` with
+    /// `ui.image(egui::load::SizedTexture::new(handle.id, size))`.
+    #[cfg(feature = "egui")]
+    pub fn register_texture(
+        &mut self,
+        target: &TextureRenderTarget,
+        filter: crate::graphics::sampler::FilterMode,
+    ) -> crate::egui::EguiTextureHandle {
+        let ctx = &mut *self;
+        let render_ctx = ctx.render_ctx.get();
+        let device = render_ctx.device();
+        let wgpu_filter = match filter {
+            crate::graphics::sampler::FilterMode::Nearest => wgpu::FilterMode::Nearest,
+            crate::graphics::sampler::FilterMode::Linear => wgpu::FilterMode::Linear,
+        };
+        ctx.egui_state.register_texture(device, target.view(), wgpu_filter)
+    }
+
+    /// Creates a `RenderTarget` bound to an off-screen `TextureRenderTarget`.
+    /// Use this to render content into the texture (e.g. a 2D scene), then
+    /// display the texture in the GUI via `register_texture` + `ui.image()`.
+    ///
+    /// The returned `RenderTarget` holds a `RefMut<RenderContext>` guard.
+    /// When it is dropped, its command encoder is submitted automatically.
+    /// Only one `RenderTarget` may exist at a time (the `RefCell` enforces this).
+    pub fn texture_render_target<'a>(
+        &'a self,
+        target: &'a TextureRenderTarget,
+    ) -> crate::graphics::render_target::RenderTarget<'a> {
+        target.as_render_target(self.render_ctx.get_mut())
+    }
+
+    /// Returns the current surface texture format. Use this when creating
+    /// off-screen texture targets that need to share pipelines with the
+    /// on-screen render path.
+    pub fn surface_format(&self) -> crate::graphics::texture::TextureFormat {
+        let wgpu_format = self.render_ctx.get().surface_format();
+        // Map back to engine-native TextureFormat.
+        match wgpu_format {
+            wgpu::TextureFormat::Rgba8Unorm => crate::graphics::texture::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Rgba8UnormSrgb => crate::graphics::texture::TextureFormat::Rgba8UnormSrgb,
+            wgpu::TextureFormat::Bgra8UnormSrgb => crate::graphics::texture::TextureFormat::Bgra8UnormSrgb,
+            wgpu::TextureFormat::R8Unorm => crate::graphics::texture::TextureFormat::R8Unorm,
+            wgpu::TextureFormat::R32Float => crate::graphics::texture::TextureFormat::R32Float,
+            wgpu::TextureFormat::Rgba32Float => crate::graphics::texture::TextureFormat::Rgba32Float,
+            _ => crate::graphics::texture::TextureFormat::Bgra8UnormSrgb, // fallback
+        }
     }
 }
 

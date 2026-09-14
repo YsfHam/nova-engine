@@ -8,6 +8,7 @@ pub mod core {
 #[cfg(feature = "egui")]
 pub mod egui {
     pub use nova_core::egui::egui::*;
+    pub use nova_core::egui::EguiTextureHandle;
 }
 
 pub mod nova2d {

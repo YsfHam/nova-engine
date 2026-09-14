@@ -190,6 +190,7 @@ impl Into<wgpu::Extent3d> for TextureSize {
 /// `wgpu::TextureFormat` we expose. Extend as new formats are needed.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TextureFormat {
+    Rgba8Unorm,
     Rgba8UnormSrgb,
     Bgra8UnormSrgb,
     R8Unorm,
@@ -200,6 +201,7 @@ pub enum TextureFormat {
 impl From<TextureFormat> for wgpu::TextureFormat {
     fn from(f: TextureFormat) -> Self {
         match f {
+            TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
             TextureFormat::Rgba8UnormSrgb => wgpu::TextureFormat::Rgba8UnormSrgb,
             TextureFormat::Bgra8UnormSrgb => wgpu::TextureFormat::Bgra8UnormSrgb,
             TextureFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
