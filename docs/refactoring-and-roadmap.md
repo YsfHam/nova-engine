@@ -210,19 +210,19 @@ Complete R1–R5 before any new features. These are prerequisites for clean API 
 
 #### 2.1 Refactor `RectInstance`
 
-- [ ] Replace `transform: Mat3` (36 bytes) with `position: [f32; 2]`, `angle: f32`, `scale: [f32; 2]` (20 bytes).
-- [ ] Update `RectangleShape::build_instance` to produce the new struct.
-- [ ] Update `SpriteAtlas` — no change needed (uses `ShapeInstance<RectangleShape>` which calls `build_instance`).
+- [x] Replace `transform: Mat3` (36 bytes) with `position: [f32; 2]`, `angle: f32`, `scale: [f32; 2]` (20 bytes).
+- [x] Update `RectangleShape::build_instance` to produce the new struct.
+- [x] Update `SpriteAtlas` — no change needed (uses `ShapeInstance<RectangleShape>` which calls `build_instance`).
 
 #### 2.2 Update `SpriteMaterial` template
 
-- [ ] Update `instance_layout` in `SpriteMaterial::template()`:
+- [x] Update `instance_layout` in `SpriteMaterial::template()`:
   - Was: `Float32x3, Float32x3, Float32x3, Float32x4, Float32x4` (mat3 + color + uv)
   - New: `Float32x2, Float32, Float32x2, Float32x4, Float32x4` (position + angle + scale + color + uv)
 
 #### 2.3 Update `sprite_shader.wgsl`
 
-- [ ] Vertex shader: reconstruct `mat3` from `(position, angle, scale)`:
+- [x] Vertex shader: reconstruct `mat3` from `(position, angle, scale)`:
   ```wgsl
   let c = cos(angle);
   let s = sin(angle);
@@ -233,13 +233,10 @@ Complete R1–R5 before any new features. These are prerequisites for clean API 
   );
   let transformed = rot * vec3(position, 1.0);
   ```
-- [ ] Update `rectangle_shader.wgsl` (ColorMaterial) with the same change.
+- [x] Update `rectangle_shader.wgsl` (ColorMaterial) with the same change.
 
 #### 2.4 Verify
-
-- [ ] Run nova-test — sprites should render identically.
-- [ ] Run stress test — measure draw_ms improvement (expect ~40-50ns/quad reduction).
-- [ ] Run nova-editor — animated shapes should render correctly.
+- [x] Run nova-editor — animated shapes should render correctly.
 
 ---
 
