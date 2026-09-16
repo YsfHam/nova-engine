@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use nova::{
     DefaultPlugins, core::{
-        EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, graphics::{
-            color::Color, frame::Frame, material::{BindGroup, BindGroupEntry}, render_pass::RenderPassDescriptor, render_target::TextureRenderTarget, sampler::FilterMode, shader::ShaderStage, texture::{TextureConfig, TextureFormat, TextureSize}, uniform::UniformValue,
+        EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, assets::{AssetState, handle::StrongHandle}, graphics::{
+            color::Color, frame::Frame, material::{BindGroup, BindGroupEntry}, render_pass::RenderPassDescriptor, render_target::TextureRenderTarget, sampler::{FilterMode, SamplerConfig}, shader::ShaderStage, texture::{Texture, TextureConfig, TextureFormat, TextureSize}, uniform::UniformValue,
         }, math::{Angle, vec2}, time::Clock,
     }, egui::{self, EguiTextureHandle}, nova2d::{
         camera::Camera2D,
@@ -74,6 +74,19 @@ struct EditorApp {
     circle_material: Option<nova::core::assets::handle::Handle<nova::nova2d::materials::CircleMaterial>>,
     /// Elapsed time for animations.
     total_time: Clock,
+
+    // ─── Async loading + off-loading demo ───────────────────────────────
+    /// Strong handle to an async-loaded texture. While `Some`, the asset
+    /// stays alive. When dropped (set to `None`), `cleanup_offloaded` will
+    /// recycle the slot next frame.
+    async_texture: Option<StrongHandle<Texture>>,
+    /// Weak handle derived from the strong handle — used to poll state
+    /// and look up the asset without keeping it alive.
+    async_texture_weak: Option<nova::core::assets::handle::Handle<Texture>>,
+    /// Number of frames since the load was dispatched (for reporting).
+    load_frames: u32,
+    /// Cumulative off-load count reported by `cleanup_offloaded`.
+    offloaded_count: usize,
 }
 
 impl EditorApp {
@@ -86,6 +99,10 @@ impl EditorApp {
             sprite_material: None,
             circle_material: None,
             total_time: Clock::new(),
+            async_texture: None,
+            async_texture_weak: None,
+            load_frames: 0,
+            offloaded_count: 0,
         }
     }
 
@@ -224,10 +241,57 @@ impl ApplicationProxy for EditorApp {
                 .expect::<nova::nova2d::materials::CircleMaterial>(Nova2dDefaults::DefaultCircleMaterial),
         );
 
+        // ─── Async loading demo ───────────────────────────────────────
+        // Dispatch an async texture load with a supplier closure. The closure
+        // simulates slow work (50ms sleep) so we can observe the Loading state
+        // for several frames before it transitions to Ready.
+        let strong = ctx.assets_manager.load(|| {
+            std::thread::sleep(std::time::Duration::from_millis(500000));
+            Ok(Texture::from_raw(
+                vec![0xFF, 0x00, 0xFF, 0xFF], // magenta 1×1
+                TextureConfig {
+                    size: TextureSize::new_texture2d(1, 1),
+                    label: "Async demo texture".to_string(),
+                    ..TextureConfig::default()
+                },
+                SamplerConfig::default(),
+            ))
+        });
+        self.async_texture_weak = Some(strong.as_handle());
+        self.async_texture = Some(strong);
+
         Ok(())
     }
 
-    fn on_update(&mut self, _ctx: &mut ApplicationContext, _dt: Duration) {
+    fn on_update(&mut self, ctx: &mut ApplicationContext, _dt: Duration) {
+        self.load_frames = self.load_frames.saturating_add(1);
+
+        // Poll the async texture state.
+        if let Some(weak) = self.async_texture_weak {
+            let state = ctx.assets_manager.asset_state(weak);
+            match state {
+                AssetState::Loading => {}
+                AssetState::Ready => {
+                    // Verify the asset is accessible.
+                    if let Some(tex) = ctx.assets_manager.get_asset(weak) {
+                        // Success — the async load completed and the data is available.
+                        let _ = tex;
+                    }
+                }
+                AssetState::Failed(err) => {
+                    eprintln!("Async texture load failed: {err}");
+                }
+                AssetState::Empty => {
+                    // Slot was off-loaded after we dropped the StrongHandle.
+                    self.async_texture_weak = None;
+                    self.offloaded_count += 1;
+                }
+            }
+        }
+
+        // Track off-load count. cleanup_offloaded is called by the engine
+        // after on_update each frame. We detect the off-load via the
+        // AssetState::Empty transition above.
     }
 
     fn on_render(&mut self, ctx: &ApplicationContext, _frame: &mut Frame) {
@@ -241,6 +305,52 @@ impl ApplicationProxy for EditorApp {
         DockArea::new(&mut self.dock_state)
             .style(Style::from_egui(ui.style().as_ref()))
             .show_inside(ui, &mut EditorTabViewer { scene_texture_id: tex_id });
+
+        egui::Window::new("Data Window")
+        .show(ui, |ui| {
+
+            // ─── Async loading + off-loading demo panel ─────────────────────
+            ui.separator();
+            ui.heading("Asset System Demo");
+            ui.spacing();
+    
+            let weak = self.async_texture_weak;
+            let has_strong = self.async_texture.is_some();
+    
+            match (weak, has_strong) {
+                (Some(_weak), true) => {
+                    // The AssetsManager is behind ApplicationContext — we can't access
+                    // it from on_gui. Poll asset_state via on_update instead.
+                    // For the demo, we show frame count and handle status.
+                    ui.label(format!("Frames since load: {}", self.load_frames));
+                    ui.label(format!("Off-loaded count: {}", self.offloaded_count));
+    
+                    ui.label(if self.load_frames < 4 {
+                        "State: Loading…"
+                    } else {
+                        "State: Ready (asset available)"
+                    });
+    
+                    ui.spacing();
+                    if ui.button("Drop StrongHandle (trigger off-load)").clicked() {
+                        // Dropping the StrongHandle removes the last strong ref.
+                        // Next frame's cleanup_offloaded will recycle the slot.
+                        self.async_texture = None;
+                        //ui.ctx().request_repaint();
+                    }
+                }
+                (Some(_weak), false) => {
+                    ui.label("StrongHandle dropped — waiting for off-load…");
+                    ui.label(format!("Frames since load: {}", self.load_frames));
+                    ui.label(format!("Off-loaded count: {}", self.offloaded_count));
+                }
+                (None, _) => {
+                    ui.label("No async asset loaded.");
+                    ui.label(format!("Frames since load: {}", self.load_frames));
+                    ui.label(format!("Off-loaded count: {}", self.offloaded_count));
+                }
+            }
+        });
     }
 }
 

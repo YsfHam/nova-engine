@@ -58,6 +58,8 @@ impl<P: ApplicationProxy> Application<P> {
 
             WindowEvent::RedrawRequested => {
                 Self::on_update(proxy, ctx, self.frame_time, self.frame_clock.restart());
+                ctx.assets_manager.drain_loaded();
+                ctx.assets_manager.cleanup_offloaded();
                 Self::on_render(proxy, ctx)?;
 
                 ctx.input_state.clear();

@@ -17,7 +17,7 @@ impl Plugin for Nova2DPlugin {
 
         // Create and insert default assets.
         let white_texture = ctx.assets_manager.insert_asset(default_white_texture());
-        let sprite_material = ctx.assets_manager.insert_asset(default_sprite_material(white_texture));
+        let sprite_material = ctx.assets_manager.insert_asset(default_sprite_material(white_texture.as_handle()));
         let circle_material = ctx.assets_manager.insert_asset(CircleMaterial::new());
 
         ctx.default_assets.insert(Nova2dDefaults::WhiteTexture, white_texture)?;

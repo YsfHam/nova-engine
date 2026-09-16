@@ -1,6 +1,6 @@
 use std::{any::{TypeId, type_name, type_name_of_val}, collections::HashMap};
 
-use crate::assets::{Asset, handle::{GenericHandle, Handle}};
+use crate::assets::{Asset, handle::{Handle, StrongHandle, StrongGenericHandle}};
 
 #[derive(Debug)]
 pub struct DuplicatedDefaultAssetError {
@@ -9,7 +9,7 @@ pub struct DuplicatedDefaultAssetError {
 }
 
 pub struct DefaultAssets {
-    assets: HashMap<String, GenericHandle>,
+    assets: HashMap<String, StrongGenericHandle>,
 }
 
 impl DefaultAssets {
@@ -20,7 +20,7 @@ impl DefaultAssets {
         }
     }
 
-    pub fn insert<A: Asset>(&mut self, key: impl DefaultAssetsKey, handle: Handle<A>) -> Result<(), DuplicatedDefaultAssetError> {
+    pub fn insert<A: Asset>(&mut self, key: impl DefaultAssetsKey, handle: StrongHandle<A>) -> Result<(), DuplicatedDefaultAssetError> {
         let key_name = key.key();
         let old_value = self.assets.insert(key_name, handle.into());
         if old_value.is_some() {
@@ -36,7 +36,7 @@ impl DefaultAssets {
 
     pub fn get<A: Asset>(&self, key: impl DefaultAssetsKey) -> Option<Handle<A>> {
         let generic_handle = self.assets.get(&key.key())?;
-        (*generic_handle).try_into_handle::<A>().ok()
+        generic_handle.as_generic_handle().try_into_handle::<A>().ok()
     }
 
     pub fn expect<A: Asset>(&self, key: impl DefaultAssetsKey) -> Handle<A> {
