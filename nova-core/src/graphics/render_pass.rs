@@ -57,17 +57,32 @@ pub struct RenderPass<'frame> {
 impl<'frame> RenderPass<'frame> {
 
     pub fn new(encoder: &'frame mut wgpu::CommandEncoder, view: &wgpu::TextureView, desc: RenderPassDescriptor) -> Self {
+        Self::new_with_resolve(encoder, view, None, desc)
+    }
+
+    /// Creates a render pass with an optional resolve target.
+    ///
+    /// When `resolve_target` is `Some`, the `view` must be a multisampled
+    /// texture view and `resolve_target` is the single-sampled view that
+    /// receives the resolved (anti-aliased) image. When `None`, `view`
+    /// is used directly as a single-sampled color attachment.
+    pub fn new_with_resolve(
+        encoder: &'frame mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        resolve_target: Option<&wgpu::TextureView>,
+        desc: RenderPassDescriptor,
+    ) -> Self {
 
         let color_attachment = wgpu::RenderPassColorAttachment {
             view,
-            resolve_target: None,
+            resolve_target,
             depth_slice: None,
             ops: wgpu::Operations {
                 load: match desc.color_clear {
                     Some(color) => wgpu::LoadOp::Clear(color.into()),
                     None => wgpu::LoadOp::Load,
                 },
-                store: wgpu::StoreOp::Store,
+                store: if resolve_target.is_some() {wgpu::StoreOp::Discard} else {wgpu::StoreOp::Store}
             },
         };
         let color_attachments = [Some(color_attachment)];

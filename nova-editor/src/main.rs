@@ -3,7 +3,7 @@ use std::time::Duration;
 use nova::{
     DefaultPlugins, core::{
         EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, graphics::{
-            color::Color, frame::Frame, material::{BindGroup, BindGroupEntry}, render_pass::RenderPassDescriptor, render_target::TextureRenderTarget, sampler::FilterMode, shader::ShaderStage, texture::TextureFormat, uniform::UniformValue,
+            color::Color, frame::Frame, material::{BindGroup, BindGroupEntry}, render_pass::RenderPassDescriptor, render_target::TextureRenderTarget, sampler::FilterMode, shader::ShaderStage, texture::{TextureConfig, TextureFormat, TextureSize}, uniform::UniformValue,
         }, math::{Angle, vec2}, time::Clock,
     }, egui::{self, EguiTextureHandle}, nova2d::{
         camera::Camera2D,
@@ -148,6 +148,13 @@ impl EditorApp {
                 .with_scale(vec2(80.0, 80.0))
                 .with_color(Color { r: 0.2, g: 0.8, b: 0.3, a: 0.5 })
                 .with_z_index(0));
+
+            renderer.draw(&Sprite::new(mat)
+                .with_position(vec2(120.0, 120.0))
+                .with_color(Color::YELLOW)
+                .with_scale(vec2(100.0, 100.0))
+                .with_angle(Angle::Degrees(-t * 10.0))
+            )
         }
 
         // Animated circles — pulsing radius and drifting position.
@@ -190,12 +197,14 @@ impl EditorApp {
 impl ApplicationProxy for EditorApp {
     fn on_init(&mut self, ctx: &mut ApplicationContext) -> EngineResult<()> {
         // Create the off-screen texture target (800×600, same format as surface).
-        let format = TextureFormat::Rgba8Unorm;
         let target = ctx.render_ctx.create_texture_target(
-            800,
-            600,
-            format,
-            Some("Scene render target"),
+            TextureConfig {
+                size: TextureSize::new_texture2d(800, 600),
+                format: TextureFormat::Rgba8Unorm,
+                label: "Scene render target".to_string(),
+                sample_count: 4,
+                ..TextureConfig::default()
+            },
         );
         self.scene_target = Some(target);
 
@@ -218,14 +227,7 @@ impl ApplicationProxy for EditorApp {
         Ok(())
     }
 
-    fn on_update(&mut self, ctx: &mut ApplicationContext, _dt: Duration) {
-        let input = ctx.input();
-        if input.is_key_down('a') {
-            println!("pressing a");
-        }
-        else {
-            println!("no pressing a");
-        }
+    fn on_update(&mut self, _ctx: &mut ApplicationContext, _dt: Duration) {
     }
 
     fn on_render(&mut self, ctx: &ApplicationContext, _frame: &mut Frame) {

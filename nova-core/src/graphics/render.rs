@@ -1,7 +1,7 @@
 
 use std::{cell::{Ref, RefCell, RefMut}, collections::HashMap, rc::Rc};
 
-use crate::{EngineResult, assets::handle::Handle, graphics::{buffer::StagingBufferPool, context::GraphicsContext, frame::Frame, geometry::GeometryPool, pipeline::{MaterialRegistry, PipelineCache}, render_target::TextureRenderTarget, sampler::SamplerConfig, shader::{self, Shader, ShaderInfo}, texture::{GpuTexture, Texture, TextureFormat}}};
+use crate::{EngineResult, assets::handle::Handle, graphics::{buffer::StagingBufferPool, context::GraphicsContext, frame::Frame, geometry::GeometryPool, pipeline::{MaterialRegistry, PipelineCache}, render_target::TextureRenderTarget, sampler::SamplerConfig, shader::{self, Shader, ShaderInfo}, texture::{GpuTexture, Texture, TextureConfig}}};
 
 
 /// Groups the three GPU resource caches (textures, samplers, shaders) into a
@@ -32,7 +32,7 @@ impl RenderCache {
         texture: &Texture,
     ) -> &GpuTexture {
         if !self.texture_cache.contains_key(&handle) {
-            let gpu = GpuTexture::new(device, queue, texture.data(), texture.size(), texture.config());
+            let gpu = GpuTexture::new(device, queue, texture.data(), texture.config());
             self.texture_cache.insert(handle, gpu);
         }
         self.texture_cache.get(&handle).unwrap()
@@ -118,21 +118,18 @@ impl RenderContextRef {
         self.inner.borrow_mut()
     }
 
-    /// Creates an off-screen [`TextureRenderTarget`] with the given
-    /// dimensions and format. The texture uses `RENDER_ATTACHMENT` +
+    /// Creates an off-screen [`TextureRenderTarget`] from a `TextureConfig`
+    /// and a sample count. The texture uses `RENDER_ATTACHMENT` +
     /// `TEXTURE_BINDING` usage so it can be rendered into and then sampled.
     ///
-    /// This is the delegated creation path: the render context is the single
-    /// responsible component for creating render-target backing textures,
-    /// keeping GPU resource creation centralized.
+    /// Pass `sample_count = 1` for no MSAA, or `4` for 4× MSAA.
     pub fn create_texture_target(
         &self,
-        width: u32,
-        height: u32,
-        format: TextureFormat,
-        label: Option<&str>,
+        config: TextureConfig,
     ) -> TextureRenderTarget {
-        self.inner.borrow().create_texture_target(width, height, format, label)
+        self.inner
+            .borrow()
+            .create_texture_target(config)
     }
 
     /// Registers a material type so the renderer can resolve it by `TypeId`
@@ -202,21 +199,13 @@ impl RenderContext {
         self.material_registry.register::<M>();
     }
 
-    /// Creates an off-screen [`TextureRenderTarget`] with the given
-    /// dimensions and format. The texture uses `RENDER_ATTACHMENT` +
-    /// `TEXTURE_BINDING` usage so it can be rendered into and then sampled.
-    ///
-    /// This is the delegated creation path: the render context is the single
-    /// responsible component for creating render-target backing textures,
-    /// keeping GPU resource creation centralized.
+    /// Creates an off-screen [`TextureRenderTarget`] from a `TextureConfig`
+    /// and a sample count.
     fn create_texture_target(
         &self,
-        width: u32,
-        height: u32,
-        format: TextureFormat,
-        label: Option<&str>,
+        config: TextureConfig,
     ) -> TextureRenderTarget {
-        TextureRenderTarget::new(&self.gfx.device, width, height, format, label)
+        TextureRenderTarget::new(&self.gfx.device, config)
     }
 
     pub(crate) fn begin_frame(&mut self) -> EngineResult<Option<Frame>> {

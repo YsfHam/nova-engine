@@ -67,6 +67,7 @@ impl MaterialRegistry {
 pub struct PipelineCacheKey {
     template: MaterialTemplate,
     target_format: wgpu::TextureFormat,
+    sample_count: u32,
     scene_layout: BindGroupLayout,
     material_layout: BindGroupLayout,
 }
@@ -80,6 +81,7 @@ pub(crate) struct PipelineCompileRequest<'a> {
     pub scene_layout: &'a wgpu::BindGroupLayout,
     pub material_layout: Option<&'a wgpu::BindGroupLayout>,
     pub target_format: wgpu::TextureFormat,
+    pub sample_count: u32,
     pub scene_layout_native: BindGroupLayout,
     pub material_layout_native: BindGroupLayout,
 }
@@ -105,6 +107,7 @@ impl PipelineCache {
         let key = PipelineCacheKey {
             template: req.template.clone(),
             target_format: req.target_format,
+            sample_count: req.sample_count,
             scene_layout: req.scene_layout_native.clone(),
             material_layout: req.material_layout_native.clone(),
         };
@@ -119,6 +122,7 @@ impl PipelineCache {
                     req.scene_layout,
                     req.material_layout,
                     req.target_format,
+                    req.sample_count,
                 )
             })
     }
@@ -130,6 +134,7 @@ impl PipelineCache {
         scene_layout: &wgpu::BindGroupLayout,
         material_layout: Option<&wgpu::BindGroupLayout>,
         target_format: wgpu::TextureFormat,
+        sample_count: u32,
     ) -> Pipeline {
         let vertex_attrs = template.buffer_layout.wgpu_attributes();
         let instance_attrs = template.instance_layout.as_ref().map(|l| l.wgpu_attributes());
@@ -210,7 +215,7 @@ impl PipelineCache {
             },
             depth_stencil: template.depth_stencil.as_ref().map(Into::into),
             multisample: wgpu::MultisampleState {
-                count: 1,
+                count: sample_count,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },

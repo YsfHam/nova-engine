@@ -10,35 +10,50 @@ use crate::{
 /// A CPU-only texture asset. Holds raw pixel data and configuration — no
 /// wgpu types. The renderer uploads this to a `GpuTexture` on demand and
 /// caches it in `RenderContext`.
+///
+/// The `config` field (`TextureConfig`) describes the GPU texture resource
+/// (size, format, usage, etc.). The `sampler_config` field describes how the
+/// texture is sampled (filtering, address mode, etc.). They are separate so a
+/// texture can be created without a sampler and vice-versa.
 pub struct Texture {
     data: Vec<u8>,
-    size: TextureSize,
     config: TextureConfig,
+    sampler_config: SamplerConfig,
 }
 
 impl Asset for Texture {}
 
 impl Texture {
-    /// Decodes an image file into a CPU `Texture` with the given config.
-    /// The config's format is used for the GPU texture; the image is decoded
-    /// as RGBA8 regardless (the renderer handles the upload).
-    pub fn from_file(path: impl Into<PathBuf>, config: TextureConfig) -> Result<Self, std::io::Error> {
+    /// Decodes an image file into a CPU `Texture` with the given config and
+    /// sampler config. The image dimensions override `config.size` — the
+    /// texture is always sized to match the decoded image.
+    pub fn from_file(
+        path: impl Into<PathBuf>,
+        mut config: TextureConfig,
+        sampler_config: SamplerConfig,
+    ) -> Result<Self, std::io::Error> {
         let path = path.into();
         let image = ImageReader::open(&path)?
             .decode()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
             .to_rgba8();
         let (w, h) = image.dimensions();
+        config.size = TextureSize::new_texture2d(w, h);
         Ok(Self {
             data: image.into_raw(),
-            size: TextureSize::new_texture2d(w, h),
             config,
+            sampler_config,
         })
     }
 
-    /// Creates a CPU `Texture` from raw pixel data.
-    pub fn from_raw(data: Vec<u8>, size: TextureSize, config: TextureConfig) -> Self {
-        Self { data, size, config }
+    /// Creates a CPU `Texture` from raw pixel data. The size is taken from
+    /// `config.size` — it must be set correctly before calling this.
+    pub fn from_raw(data: Vec<u8>, config: TextureConfig, sampler_config: SamplerConfig) -> Self {
+        Self {
+            data,
+            config,
+            sampler_config,
+        }
     }
 
     pub fn data(&self) -> &[u8] {
@@ -46,11 +61,15 @@ impl Texture {
     }
 
     pub fn size(&self) -> TextureSize {
-        self.size
+        self.config.size
     }
 
     pub fn config(&self) -> &TextureConfig {
         &self.config
+    }
+
+    pub fn sampler_config(&self) -> &SamplerConfig {
+        &self.sampler_config
     }
 }
 
@@ -58,23 +77,38 @@ impl Texture {
 /// CPU `Texture` asset and used by the renderer to create the `GpuTexture`.
 #[derive(Clone, Debug)]
 pub struct TextureConfig {
+    pub size: TextureSize,
     pub format: TextureFormat,
     pub mip_level_count: u32,
     pub sample_count: u32,
     pub usage: TextureUsages,
     pub label: String,
-    pub sampler_config: SamplerConfig,
 }
 
 impl Default for TextureConfig {
     fn default() -> Self {
         Self {
+            size: TextureSize::new_texture2d(1, 1),
             format: TextureFormat::Rgba8UnormSrgb,
             mip_level_count: 1,
             sample_count: 1,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             label: "Texture".to_string(),
-            sampler_config: SamplerConfig::default(),
+        }
+    }
+}
+
+impl<'a> From<&'a TextureConfig> for wgpu::TextureDescriptor<'a> {
+    fn from(config: &'a TextureConfig) -> Self {
+        wgpu::TextureDescriptor {
+            label: Some(&config.label),
+            size: config.size.into(),
+            mip_level_count: config.mip_level_count,
+            sample_count: config.sample_count,
+            dimension: config.size.tex_dim.into(),
+            format: config.format.into(),
+            usage: config.usage.into(),
+            view_formats: &[],
         }
     }
 }
@@ -86,23 +120,16 @@ pub(crate) struct GpuTexture {
 }
 
 impl GpuTexture {
+    /// Creates a GPU texture from pixel data. Writes `data` into the texture
+    /// immediately via the queue.
     pub(crate) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         data: &[u8],
-        size: TextureSize,
         config: &TextureConfig,
     ) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(&config.label),
-            size: size.into(),
-            mip_level_count: config.mip_level_count,
-            sample_count: config.sample_count,
-            dimension: size.tex_dim.into(),
-            format: config.format.into(),
-            usage: config.usage.into(),
-            view_formats: &[],
-        });
+        let size = config.size;
+        let texture = device.create_texture(&config.into());
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -114,14 +141,24 @@ impl GpuTexture {
             data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * size.width),
-                rows_per_image: Some(size.height),
+                bytes_per_row: Some(4 * size.width()),
+                rows_per_image: Some(size.height()),
             },
             size.into(),
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        Self { view }
+    }
+
+    /// Creates an empty GPU texture (no pixel data uploaded). The texture is
+    /// allocated with the size and format from `config`.
+    ///
+    /// Used internally by `TextureRenderTarget` to create MSAA textures.
+    pub(crate) fn empty(device: &wgpu::Device, config: &TextureConfig) -> Self {
+        let texture = device.create_texture(&config.into());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self { view }
     }
 

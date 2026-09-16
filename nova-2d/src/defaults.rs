@@ -1,4 +1,4 @@
-use nova_core::{assets::{defaults::DefaultAssetsKey, handle::Handle}, graphics::texture::{Texture, TextureConfig, TextureSize}};
+use nova_core::{assets::{defaults::DefaultAssetsKey, handle::Handle}, graphics::{sampler::SamplerConfig, texture::{Texture, TextureConfig, TextureSize}}};
 
 use crate::materials::{SpriteMaterial};
 
@@ -6,8 +6,11 @@ use crate::materials::{SpriteMaterial};
 pub fn default_white_texture() -> Texture {
     Texture::from_raw(
         vec![255, 255, 255, 255],
-        TextureSize::new_texture2d(1, 1),
-        TextureConfig::default(),
+        TextureConfig {
+            size: TextureSize::new_texture2d(1, 1),
+            ..TextureConfig::default()
+        },
+        SamplerConfig::default(),
     )
 }
 

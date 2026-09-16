@@ -1,5 +1,5 @@
 use bytemuck::Pod;
-use nova_core::math::{Mat3, Vec2};
+use nova_core::math::Vec2;
 
 /// Per-instance data for a textured/solid rectangle (quad).
 ///
@@ -15,22 +15,11 @@ use nova_core::math::{Mat3, Vec2};
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, bytemuck::Zeroable)]
 pub struct RectInstance {
-    /// 2D transform matrix (scale × rotation × translation).
-    pub transform: Mat3,
-    /// Per-quad color (multiplied with texture sample).
+    pub position: [f32; 2],
+    pub scale: [f32; 2],
     pub color: [f32; 4],
-    /// UV rectangle: (left, top, right, bottom).
     pub uv_rect: [f32; 4],
-}
-
-impl RectInstance {
-    pub fn new(transform: Mat3, color: nova_core::graphics::color::Color, uv_rect: crate::utils::RectF32) -> Self {
-        Self {
-            transform,
-            color: color.into(),
-            uv_rect: [uv_rect.left, uv_rect.top, uv_rect.right, uv_rect.bottom],
-        }
-    }
+    pub rotation: f32,
 }
 
 /// Per-instance data for a filled circle.

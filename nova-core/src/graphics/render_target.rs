@@ -2,7 +2,7 @@ use std::{any::TypeId, cell::RefMut};
 
 use crate::{
     assets::AssetsManager, graphics::{
-        buffer::{Offset, StagingBufferPool}, draw_batch::DrawBatch, geometry::GeometryPool, material::{BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry}, pipeline::{MaterialRegistration, PipelineCache}, render::{RenderCache, RenderContext, RenderContextRef}, render_pass::{IndexFormat, RenderPass, RenderPassDescriptor}, texture::TextureFormat, uniform::UniformBuffer,
+        buffer::{Offset, StagingBufferPool}, draw_batch::DrawBatch, geometry::GeometryPool, material::{BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry}, pipeline::{MaterialRegistration, PipelineCache}, render::{RenderCache, RenderContext, RenderContextRef}, render_pass::{IndexFormat, RenderPass, RenderPassDescriptor}, texture::{GpuTexture, TextureConfig, TextureUsages}, uniform::UniformBuffer,
     },
 };
 
@@ -24,6 +24,10 @@ use crate::{
 pub struct RenderTarget<'a> {
     pub(crate) render_ctx: RefMut<'a, RenderContext>,
     pub(crate) view: &'a wgpu::TextureView,
+    /// Multisampled render attachment view, or `None` if rendering without MSAA.
+    msaa_texture: Option<GpuTexture>,
+    /// The sample count for this target (1 = no MSAA).
+    sample_count: u32,
     pub(crate) encoder: Option<wgpu::CommandEncoder>,
     uniform_buffer: UniformBuffer,
     scene_bind_group_layout: Option<wgpu::BindGroupLayout>,
@@ -32,15 +36,39 @@ pub struct RenderTarget<'a> {
 
 impl<'a> RenderTarget<'a> {
     pub(crate) fn new(render_ctx: RefMut<'a, RenderContext>, view: &'a wgpu::TextureView) -> Self {
+        Self::new_with_msaa(render_ctx, view, None)
+    }
+
+    /// Creates a `RenderTarget` with optional MSAA support.
+    ///
+    /// When `msaa_view` is `Some`, the render pass uses it as the color
+    /// attachment and `resolve_view` as the resolve target. When `None`,
+    /// `resolve_view` is used directly as the color attachment (no MSAA).
+    pub(crate) fn new_with_msaa(
+        render_ctx: RefMut<'a, RenderContext>,
+        resolve_view: &'a wgpu::TextureView,
+        msaa_config: Option<&'a TextureConfig>,
+    ) -> Self {
         let encoder = render_ctx.device().create_command_encoder(
             &wgpu::CommandEncoderDescriptor {
                 label: Some("RenderTarget encoder"),
             },
         );
 
+        let sample_count = 
+            msaa_config
+            .map(|config| config.sample_count)
+            .unwrap_or(1);
+
+        let msaa_texture = 
+            msaa_config
+            .map(|config| GpuTexture::empty(render_ctx.device(), config));
+
         Self {
             render_ctx,
-            view,
+            view: resolve_view,
+            msaa_texture,
+            sample_count,
             encoder: Some(encoder),
             uniform_buffer: UniformBuffer::new(),
             scene_bind_group_layout: None,
@@ -57,6 +85,7 @@ impl<'a> RenderTarget<'a> {
         let render_ctx: &mut RenderContext = &mut self.render_ctx;
         RenderTargetCommander {
             surface_format: self.view.texture().format(),
+            sample_count: self.sample_count,
             gpu: GpuResources {
                 device: &render_ctx.gfx.device,
                 queue: &render_ctx.gfx.queue,
@@ -71,6 +100,7 @@ impl<'a> RenderTarget<'a> {
             uniform_buffer: &mut self.uniform_buffer,
             encoder: self.encoder.as_mut().expect("Encoder must be Some"),
             view: self.view,
+            msaa_view: self.msaa_texture.as_ref().map(|tex| tex.view()),
         }
     }
 
@@ -148,48 +178,64 @@ impl<'a> Drop for RenderTarget<'a> {
 /// [`RenderTarget::submit`] records into the command queue; the texture's
 /// contents are available after GPU completion.
 pub struct TextureRenderTarget {
-    pub(crate) view: wgpu::TextureView,
+    texture: GpuTexture,
+    msaa_config: Option<TextureConfig>,
 }
 
 impl TextureRenderTarget {
-    /// Creates a new texture render target with the given dimensions and
-    /// format. The texture is created with `RENDER_ATTACHMENT` +
-    /// `TEXTURE_BINDING` usage so it can be both rendered into and sampled.
+   
     pub fn new(
         device: &wgpu::Device,
-        width: u32,
-        height: u32,
-        format: TextureFormat,
-        label: Option<&str>,
+        mut config: TextureConfig,
     ) -> Self {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label,
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: format.into(),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
+        let sample_count = config.sample_count;
+        config.usage = TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING;
+        if sample_count > 1 {
+            let resolve_tex_config = TextureConfig {
+                sample_count: 1,
+                ..config.clone()
+            };
+            let texture = GpuTexture::empty(device, &resolve_tex_config);
 
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let msaa_config = TextureConfig {
+                label: format!("MSAA-{}", config.label),
+                ..config.clone()
+            };
 
-        Self { view }
+            Self {
+                texture,
+                msaa_config: Some(msaa_config)
+            }
+
+        }
+        else {
+            let texture = GpuTexture::empty(device, &config);
+            Self {
+                texture,
+                msaa_config: None
+            }
+        }
+    }
+
+    pub(crate) fn view(&self) -> &wgpu::TextureView {
+        self.texture.view()
     }
 
     /// Creates a [`RenderTarget`] that renders into this texture's view,
     /// holding the given `RefMut<RenderContext>` guard for its lifetime.
+    ///
+    /// When MSAA is active, the render pass uses the multisampled view as
+    /// the color attachment and the single-sampled `view` as the resolve
+    /// target.
     pub fn as_render_target<'a>(
         &'a self,
         render_ctx: &'a RenderContextRef,
     ) -> RenderTarget<'a> {
-        RenderTarget::new(render_ctx.get_mut(), &self.view)
+        RenderTarget::new_with_msaa(
+            render_ctx.get_mut(),
+            self.texture.view(),
+            self.msaa_config.as_ref(),
+        )
     }
 }
 
@@ -214,7 +260,9 @@ pub(crate) struct PassContext<'a> {
     pub scene_bind_group_layout: &'a wgpu::BindGroupLayout,
     pub scene_layout_native: BindGroupLayout,
     pub target_format: wgpu::TextureFormat,
+    pub sample_count: u32,
     pub view: &'a wgpu::TextureView,
+    pub msaa_view: Option<&'a wgpu::TextureView>,
 }
 
 /// A command-recording scope bound to a [`RenderTarget`]. Created via
@@ -229,6 +277,7 @@ pub(crate) struct PassContext<'a> {
 /// (pipeline_cache vs bind_group_allocator vs encoder) coexist freely.
 pub struct RenderTargetCommander<'a> {
     surface_format: wgpu::TextureFormat,
+    sample_count: u32,
     gpu: GpuResources<'a>,
     material_registry: &'a crate::graphics::pipeline::MaterialRegistry,
     scene_bind_group_layout: &'a wgpu::BindGroupLayout,
@@ -236,6 +285,7 @@ pub struct RenderTargetCommander<'a> {
     uniform_buffer: &'a mut UniformBuffer,
     encoder: &'a mut wgpu::CommandEncoder,
     view: &'a wgpu::TextureView,
+    msaa_view: Option<&'a wgpu::TextureView>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -275,6 +325,7 @@ impl<'a> RenderTargetCommander<'a> {
     {
         let Self {
             surface_format,
+            sample_count,
             mut gpu,
             material_registry,
             scene_bind_group_layout,
@@ -282,6 +333,7 @@ impl<'a> RenderTargetCommander<'a> {
             uniform_buffer,
             encoder,
             view,
+            msaa_view,
         } = self;
 
         // Phase 1: scene bind group (group 0).
@@ -308,7 +360,9 @@ impl<'a> RenderTargetCommander<'a> {
             scene_bind_group_layout,
             scene_layout_native: scene_bind_group_layout_native,
             target_format: surface_format,
+            sample_count,
             view,
+            msaa_view,
         };
         record_pass(
             &pass_ctx,
@@ -389,9 +443,12 @@ fn record_pass(
         scene_bind_group_layout,
         scene_layout_native,
         target_format,
+        sample_count,
         view,
+        msaa_view,
     } = pass_ctx;
     let target_format = *target_format;
+    let sample_count = *sample_count;
     let pass_descriptor = pass_descriptor.clone();
 
     let GpuResources {
@@ -406,7 +463,12 @@ fn record_pass(
     let dynamic_buffer = staging_buffer.swap_buffers();
     let shared_buffer = geometry_pool.buffer();
 
-    let mut pass = RenderPass::new(encoder, view, pass_descriptor);
+    let mut pass = RenderPass::new_with_resolve(
+        encoder,
+        msaa_view.unwrap_or(view),
+        msaa_view.is_some().then_some(view),
+        pass_descriptor,
+    );
     pass.set_bind_group(0, scene_bind_group, &[]);
 
     let mut current_material_type: Option<TypeId> = None;
@@ -427,6 +489,7 @@ fn record_pass(
                 scene_layout: scene_bind_group_layout,
                 material_layout: material_layout.as_ref(),
                 target_format,
+                sample_count,
                 scene_layout_native: scene_layout_native.clone(),
                 material_layout_native: template.bind_group_layout.clone(),
             },
@@ -513,7 +576,7 @@ fn build_material_bind_group(req: BindGroupBuildRequest<'_>) -> wgpu::BindGroup 
         if let BindGroupEntry::Texture { texture, .. } = entry {
             let Some(tex) = assets.get_asset(*texture) else { continue };
             render_cache.get_or_create_gpu_texture(*texture, device, queue, tex);
-            render_cache.get_or_create_sampler(&tex.config().sampler_config, device);
+            render_cache.get_or_create_sampler(tex.sampler_config(), device);
         }
     }
 
@@ -543,7 +606,7 @@ fn build_material_bind_group(req: BindGroupBuildRequest<'_>) -> wgpu::BindGroup 
                             resource: wgpu::BindingResource::TextureView(gpu.view()),
                         });
                     }
-                    if let Some(sampler) = render_cache.sampler(&tex.config().sampler_config) {
+                    if let Some(sampler) = render_cache.sampler(tex.sampler_config()) {
                         entries.push(wgpu::BindGroupEntry {
                             binding: *sampler_binding_slot,
                             resource: wgpu::BindingResource::Sampler(sampler),

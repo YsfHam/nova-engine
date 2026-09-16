@@ -1,4 +1,4 @@
-use crate::{EngineResult, app::ApplicationContext, assets::defaults::CoreDefaultAssets, graphics::{texture::{Texture, TextureConfig, TextureSize}}};
+use crate::{EngineResult, app::ApplicationContext, assets::defaults::CoreDefaultAssets, graphics::{sampler::SamplerConfig, texture::{Texture, TextureConfig, TextureSize}}};
 
 pub trait Plugin: 'static {
     fn init(&self, ctx: &mut ApplicationContext) -> EngineResult<()>;
@@ -41,11 +41,12 @@ impl Plugin for CorePlugin {
 
         let texture = assets_manager.insert_asset(Texture::from_raw(
             vec![0xFF, 0xFF, 0xFF, 0xFF],
-            TextureSize::new_texture2d(1, 1),
             TextureConfig {
+                size: TextureSize::new_texture2d(1, 1),
                 label: "White texture".to_string(),
                 ..TextureConfig::default()
             },
+            SamplerConfig::default(),
         ));
 
         default_assets.insert(CoreDefaultAssets::WhiteTexture, texture)?;

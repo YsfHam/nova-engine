@@ -2,7 +2,7 @@ use bytemuck::Pod;
 use nova_core::{
     assets::handle::Handle,
     graphics::{color::Color, geometry::GeometryRef, material::Material},
-    math::{Angle, Mat3, Vec2},
+    math::{Angle, Vec2},
 };
 
 use crate::utils::RectF32;
@@ -74,8 +74,18 @@ impl Shape2D for RectangleShape {
         color: Color,
         uv: RectF32,
     ) -> Self::InstanceData {
-        let transform = Mat3::from_scale_angle_translation(scale, rotation.into(), position);
-        Self::InstanceData::new(transform, color, uv)
+        Self::InstanceData {
+            position: position.into(),
+            scale: scale.into(),
+            color: color.into(),
+            uv_rect: [
+                uv.left,
+                uv.top,
+                uv.right,
+                uv.bottom
+            ],
+            rotation: rotation.into()
+        }
     }
 }
 

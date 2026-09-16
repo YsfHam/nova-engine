@@ -58,7 +58,13 @@ impl Material for SpriteMaterial {
             },
             buffer_layout: VertexBufferLayout::new(&[VertexFormat::Float32x2], 0),
             instance_layout: Some(InstanceBufferLayout::new(
-                &[VertexFormat::Float32x3, VertexFormat::Float32x3, VertexFormat::Float32x3, VertexFormat::Float32x4, VertexFormat::Float32x4],
+                &[
+                    VertexFormat::Float32x2, 
+                    VertexFormat::Float32x2,
+                    VertexFormat::Float32x4,
+                    VertexFormat::Float32x4,
+                    VertexFormat::Float32
+                ],
                 1,
             )),
             blend_state: BlendMode::Alpha,
