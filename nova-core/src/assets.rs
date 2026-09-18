@@ -4,7 +4,7 @@ use std::{
     sync::mpsc,
 };
 use crate::assets::{
-    error::AssetError, handle::{GenericHandle, Handle, StrongHandle}, load::{LoadJob, LoadResult, erase_supplier, init_load_job_processor}, storage::{AssetStorage, ErasedStorage},
+    error::AssetError, handle::{WeakGenericHandle, WeakHandle, Handle}, load::{LoadJob, LoadResult, erase_supplier, init_load_job_processor}, storage::{AssetStorage, ErasedStorage},
 };
 
 pub mod handle;
@@ -65,19 +65,19 @@ impl AssetsManager {
         }
     }
 
-    pub fn insert_asset<A: Asset>(&mut self, asset: A) -> StrongHandle<A> {
+    pub fn insert_asset<A: Asset>(&mut self, asset: A) -> Handle<A> {
         let storage = self.get_or_create_storage_mut();
         storage.insert(asset)
     }
 
-    pub fn get_asset<A: Asset>(&self, handle: Handle<A>) -> AssetState<'_, A> {
+    pub fn get_asset<A: Asset>(&self, handle: WeakHandle<A>) -> AssetState<'_, A> {
         let Some(storage) = 
             self.get_storage()
         else {return AssetState::Empty};
         storage.get(handle)
     }
 
-    pub fn get_asset_mut<A: Asset>(&mut self, handle: Handle<A>) -> AssetMutState<'_, A> {
+    pub fn get_asset_mut<A: Asset>(&mut self, handle: WeakHandle<A>) -> AssetMutState<'_, A> {
         let Some(storage) =
             self.get_storage_mut()
         else {return AssetMutState::Empty};
@@ -90,7 +90,7 @@ impl AssetsManager {
     /// The `GenericHandle`'s `type_id` must match the stored asset type, and
     /// the generation must match. Returns `None` for stale or unregistered
     /// handles.
-    pub fn get_asset_any(&self, handle: GenericHandle) -> AnyAssetState<'_> {
+    pub fn get_asset_any(&self, handle: WeakGenericHandle) -> AnyAssetState<'_> {
         let Some(storage) = 
             self.storages.get(&handle.type_id)
         else {return AnyAssetState::Empty};
@@ -131,7 +131,7 @@ impl AssetsManager {
     pub fn load<A: Asset>(
         &mut self,
         supplier: impl FnOnce() -> Result<A, AssetError> + Send + 'static,
-    ) -> StrongHandle<A> {
+    ) -> Handle<A> {
         // Reserve a slot in Loading state.
         let storage = self.get_or_create_storage_mut::<A>();
         let strong_handle = storage.reserve_for_load();

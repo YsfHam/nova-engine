@@ -2,7 +2,7 @@
 use std::hash::Hash;
 
 use crate::{
-    assets::{Asset, handle::Handle}, graphics::{
+    assets::{Asset, handle::WeakHandle}, graphics::{
         buffer::BufferLayout, shader::{ShaderInfo, ShaderStage}, texture::{Texture, TextureSampleType, TextureViewDimension}, uniform::{UniformType, UniformValue},
     },
 };
@@ -170,7 +170,7 @@ pub enum BindGroupEntry {
         binding_slot: u32,
         sampler_binding_slot: u32,
         visibility: ShaderStage,
-        texture: Handle<Texture>,
+        texture: WeakHandle<Texture>,
         view_dimension: TextureViewDimension,
         sample_type: TextureSampleType,
     },

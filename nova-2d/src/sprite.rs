@@ -1,5 +1,5 @@
 use nova_core::{
-    assets::handle::Handle,
+    assets::handle::WeakHandle,
     math::Vec2,
 };
 
@@ -15,7 +15,7 @@ use crate::{
 pub type Sprite = ShapeInstance<RectangleShape>;
 
 /// Creates a new sprite with the given sprite material handle.
-pub fn sprite(material: Handle<crate::materials::SpriteMaterial>) -> Sprite {
+pub fn sprite(material: WeakHandle<crate::materials::SpriteMaterial>) -> Sprite {
     ShapeInstance::new(material)
 }
 
@@ -24,7 +24,7 @@ pub fn sprite(material: Handle<crate::materials::SpriteMaterial>) -> Sprite {
 /// All sprites share one [`GenericHandle`] (which binds the atlas texture).
 /// Sprites are indexed by `u32` — row-major order (left-to-right, top-to-bottom).
 pub struct SpriteAtlas {
-    material: Handle<SpriteMaterial>,
+    material: WeakHandle<SpriteMaterial>,
     /// Number of columns/rows in the grid (atlas_size / sprite_size).
     grid: Vec2,
     /// Pixel size of each cell. Used to compute UVs in pixel space first,
@@ -40,7 +40,7 @@ impl SpriteAtlas {
     ///
     /// `atlas_size` is the texture dimensions in pixels. `sprite_size` is
     /// the dimensions of each cell in pixels. The atlas must divide evenly.
-    pub fn new(material: Handle<SpriteMaterial>, atlas_size: Vec2, sprite_size: Vec2) -> Self {
+    pub fn new(material: WeakHandle<SpriteMaterial>, atlas_size: Vec2, sprite_size: Vec2) -> Self {
         let grid = atlas_size / sprite_size;
         Self {
             material,

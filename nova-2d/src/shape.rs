@@ -1,6 +1,6 @@
 use bytemuck::Pod;
 use nova_core::{
-    assets::handle::Handle,
+    assets::handle::WeakHandle,
     graphics::{color::Color, geometry::GeometryRef, material::Material},
     math::{Angle, Vec2},
 };
@@ -137,12 +137,12 @@ pub struct ShapeInstance<S: Shape2D> {
     pub scale: Vec2,
     pub color: Color,
     pub uv: RectF32,
-    pub material: Handle<S::Material>,
+    pub material: WeakHandle<S::Material>,
     pub z_index: u32,
 }
 
 impl<S: Shape2D> ShapeInstance<S> {
-    pub fn new(material: Handle<S::Material>) -> Self {
+    pub fn new(material: WeakHandle<S::Material>) -> Self {
         Self {
             position: Vec2::ZERO,
             angle: Angle::ZERO,

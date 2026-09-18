@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use nova::{
     DefaultPlugins, core::{
-        EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, assets::{AssetState, handle::StrongHandle}, graphics::{
+        EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, assets::{AssetState, handle::Handle}, graphics::{
             color::Color, frame::Frame, material::{BindGroup, BindGroupEntry}, render_pass::RenderPassDescriptor, render_target::TextureRenderTarget, sampler::{FilterMode, SamplerConfig}, shader::ShaderStage, texture::{Texture, TextureConfig, TextureFormat, TextureSize}, uniform::UniformValue,
         }, math::{Angle, vec2}, time::Clock,
     }, egui::{self, EguiTextureHandle}, nova2d::{
@@ -69,9 +69,9 @@ struct EditorApp {
     /// Dock state for the editor layout.
     dock_state: DockState<Tab>,
     /// Sprite material for rendering rectangles.
-    sprite_material: Option<nova::core::assets::handle::Handle<SpriteMaterial>>,
+    sprite_material: Option<nova::core::assets::handle::WeakHandle<SpriteMaterial>>,
     /// Circle material for rendering circles.
-    circle_material: Option<nova::core::assets::handle::Handle<nova::nova2d::materials::CircleMaterial>>,
+    circle_material: Option<nova::core::assets::handle::WeakHandle<nova::nova2d::materials::CircleMaterial>>,
     /// Elapsed time for animations.
     total_time: Clock,
 
@@ -79,10 +79,10 @@ struct EditorApp {
     /// Strong handle to an async-loaded texture. While `Some`, the asset
     /// stays alive. When dropped (set to `None`), `cleanup_offloaded` will
     /// recycle the slot next frame.
-    async_texture: Option<StrongHandle<Texture>>,
+    async_texture: Option<Handle<Texture>>,
     /// Weak handle derived from the strong handle — used to poll state
     /// and look up the asset without keeping it alive.
-    async_texture_weak: Option<nova::core::assets::handle::Handle<Texture>>,
+    async_texture_weak: Option<nova::core::assets::handle::WeakHandle<Texture>>,
     /// Number of frames since the load was dispatched (for reporting).
     load_frames: u32,
     /// Cumulative off-load count reported by `cleanup_offloaded`.
@@ -257,7 +257,7 @@ impl ApplicationProxy for EditorApp {
                 SamplerConfig::default(),
             ))
         });
-        self.async_texture_weak = Some(strong.as_handle());
+        self.async_texture_weak = Some(strong.weak());
         self.async_texture = Some(strong);
 
         Ok(())

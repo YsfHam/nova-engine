@@ -18,7 +18,7 @@ impl SpriteMaterial {
     }
 
     pub fn texture(&self) -> Handle<Texture> {
-        self.texture
+        self.texture.clone()
     }
 
     pub fn tint(&self) -> Color {
@@ -39,7 +39,7 @@ impl AsBindGroup for SpriteMaterial {
                 binding_slot: 0,
                 sampler_binding_slot: 1,
                 visibility: ShaderStage::Fragment,
-                texture: self.texture,
+                texture: self.texture.weak(),
                 view_dimension: TextureViewDimension::D2,
                 sample_type: TextureSampleType::FloatFilterable,
             })

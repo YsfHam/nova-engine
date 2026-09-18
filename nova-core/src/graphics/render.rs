@@ -1,14 +1,14 @@
 
 use std::{cell::{Ref, RefCell, RefMut}, collections::HashMap, rc::Rc};
 
-use crate::{EngineResult, assets::handle::Handle, graphics::{buffer::StagingBufferPool, context::GraphicsContext, frame::Frame, geometry::GeometryPool, pipeline::{MaterialRegistry, PipelineCache}, render_target::TextureRenderTarget, sampler::SamplerConfig, shader::{self, Shader, ShaderInfo}, texture::{GpuTexture, Texture, TextureConfig}}};
+use crate::{EngineResult, assets::handle::WeakHandle, graphics::{buffer::StagingBufferPool, context::GraphicsContext, frame::Frame, geometry::GeometryPool, pipeline::{MaterialRegistry, PipelineCache}, render_target::TextureRenderTarget, sampler::SamplerConfig, shader::{self, Shader, ShaderInfo}, texture::{GpuTexture, Texture, TextureConfig}}};
 
 
 /// Groups the three GPU resource caches (textures, samplers, shaders) into a
 /// single struct so `RenderContext` has one field and the commander borrows
 /// one `&mut RenderCache` instead of three separate cache references.
 pub(crate) struct RenderCache {
-    texture_cache: HashMap<Handle<Texture>, GpuTexture>,
+    texture_cache: HashMap<WeakHandle<Texture>, GpuTexture>,
     sampler_cache: HashMap<SamplerConfig, wgpu::Sampler>,
     shader_cache: HashMap<ShaderInfo, Shader>,
 }
@@ -26,7 +26,7 @@ impl RenderCache {
     /// CPU `Texture` asset and caches it.
     pub(crate) fn get_or_create_gpu_texture(
         &mut self,
-        handle: Handle<Texture>,
+        handle: WeakHandle<Texture>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         texture: &Texture,
@@ -38,13 +38,13 @@ impl RenderCache {
         self.texture_cache.get(&handle).unwrap()
     }
 
-    pub(crate) fn remove_texture(&mut self, handle: Handle<Texture>) {
+    pub(crate) fn remove_texture(&mut self, handle: WeakHandle<Texture>) {
         self.texture_cache.remove(&handle);
     }
 
     /// Returns a reference to a cached `GpuTexture` without creating one.
     /// The caller must have already called `get_or_create_gpu_texture`.
-    pub(crate) fn gpu_texture(&self, handle: &Handle<Texture>) -> Option<&GpuTexture> {
+    pub(crate) fn gpu_texture(&self, handle: &WeakHandle<Texture>) -> Option<&GpuTexture> {
         self.texture_cache.get(handle)
     }
 

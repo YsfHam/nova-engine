@@ -1,7 +1,7 @@
 use std::{collections::{BTreeMap, HashMap}, sync::OnceLock};
 
 use nova_core::{
-    assets::handle::GenericHandle,
+    assets::handle::WeakGenericHandle,
     graphics::{draw_batch::DrawBatch, geometry::GeometryRef},
 };
 
@@ -50,8 +50,8 @@ impl InstanceBatchRaw {
 /// `GenericHandle`. Each material maps to exactly one `InstanceBatchRaw`
 /// — the material type determines the instance stride and geometry.
 struct BatchLayer {
-    index_map: HashMap<GenericHandle, usize>,
-    batches: Vec<(GenericHandle, InstanceBatchRaw)>,
+    index_map: HashMap<WeakGenericHandle, usize>,
+    batches: Vec<(WeakGenericHandle, InstanceBatchRaw)>,
     capacity_hint: usize,
 }
 
@@ -66,7 +66,7 @@ impl BatchLayer {
 
     fn add<D: bytemuck::Pod>(
         &mut self,
-        material: GenericHandle,
+        material: WeakGenericHandle,
         stride: u32,
         geometry: GeometryRef,
         data: &D,
@@ -107,7 +107,7 @@ impl Batcher2D {
     /// The material handle encodes the material type, which determines the
     /// pipeline (shader + instance layout). The shape's `InstanceData` type
     /// must match the material's instance layout.
-    pub fn add<S>(&mut self, material: GenericHandle, data: &S::InstanceData, z_index: u32)
+    pub fn add<S>(&mut self, material: WeakGenericHandle, data: &S::InstanceData, z_index: u32)
     where
         S: crate::shape::Shape2D,
     {

@@ -2,7 +2,7 @@
 use bytemuck::NoUninit;
 
 use crate::{
-    assets::handle::{GenericHandle, Handle}, graphics::{geometry::GeometryRef, material::Material},
+    assets::handle::{WeakGenericHandle, WeakHandle}, graphics::{geometry::GeometryRef, material::Material},
 };
 
 /// A single draw batch: a material reference + geometry (owned or shared).
@@ -31,7 +31,7 @@ use crate::{
 /// vertices per batch — more than enough for 2D quads and most 3D meshes.
 #[derive(Debug)]
 pub struct DrawBatch {
-    pub material: GenericHandle,
+    pub material: WeakGenericHandle,
     geometry: BatchGeometry,
     instance_batch: Option<InstanceBatch>,
 }
@@ -51,7 +51,7 @@ pub enum BatchGeometry {
 impl DrawBatch {
     /// Creates a batch with **owned** geometry (empty, to be filled via
     /// [`add_vertices`](Self::add_vertices)).
-    pub fn new<M: Material>(material: Handle<M>, vertex_stride: u32) -> Self {
+    pub fn new<M: Material>(material: WeakHandle<M>, vertex_stride: u32) -> Self {
         Self {
             material: material.into_generic(),
             geometry: BatchGeometry::Owned(VertexBatch::new(vertex_stride)),
@@ -61,7 +61,7 @@ impl DrawBatch {
 
     /// Creates a batch with **owned** geometry from pre-built vertices + indices.
     pub fn with_vertices<V: NoUninit, M: Material>(
-        material: Handle<M>,
+        material: WeakHandle<M>,
         vertices: &[V],
         vertex_stride: u32,
         indices: &[u16],
@@ -74,7 +74,7 @@ impl DrawBatch {
     /// Creates a batch referencing **shared** geometry from a [`GeometryRef`].
     /// The geometry must have been inserted into the `GeometryPool` first.
     /// No per-frame upload — the offsets are permanent.
-    pub fn with_shared_geometry(material: GenericHandle, geometry: GeometryRef) -> Self {
+    pub fn with_shared_geometry(material: WeakGenericHandle, geometry: GeometryRef) -> Self {
         Self {
             material,
             geometry: BatchGeometry::Shared(geometry),

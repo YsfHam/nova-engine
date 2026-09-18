@@ -1,9 +1,9 @@
 use std::{any::Any, sync::Arc};
 
-use crate::assets::{AnyAssetState, Asset, AssetMutState, AssetState, error::AssetError, handle::{GenericHandle, Handle, StrongHandle}};
+use crate::assets::{AnyAssetState, Asset, AssetMutState, AssetState, error::AssetError, handle::{WeakGenericHandle, WeakHandle, Handle}};
 
 pub(crate) trait ErasedStorage {
-    fn get_any<'a>(&'a self, handle: GenericHandle) -> AnyAssetState<'a>;
+    fn get_any<'a>(&'a self, handle: WeakGenericHandle) -> AnyAssetState<'a>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     /// Removes all `Ready` assets whose ref count has dropped to 1 (only the
@@ -72,14 +72,14 @@ impl<A: Asset> AssetStorage<A> {
         }
     }
 
-    pub fn insert(&mut self, asset: A) -> StrongHandle<A> {
+    pub fn insert(&mut self, asset: A) -> Handle<A> {
        let handle = self.reserve_for_load();
        let slot = self.storage.get_mut(handle.index as usize).unwrap();
        slot.state = SlotState::Ready(asset);
        handle
     }
 
-    pub fn get(&self, handle: Handle<A>) -> AssetState<'_, A> {
+    pub fn get(&self, handle: WeakHandle<A>) -> AssetState<'_, A> {
         let Some(slot) = 
             self.storage.get(handle.index as usize)
         else {return AssetState::Empty };
@@ -90,7 +90,7 @@ impl<A: Asset> AssetStorage<A> {
         }
     }
 
-    pub fn get_mut(&mut self, handle: Handle<A>) -> AssetMutState<'_, A> {
+    pub fn get_mut(&mut self, handle: WeakHandle<A>) -> AssetMutState<'_, A> {
         let Some(slot) = 
             self.storage.get_mut(handle.index as usize)
         else {return AssetMutState::Empty };
@@ -107,7 +107,7 @@ impl<A: Asset> AssetStorage<A> {
     ///
     /// The asset data is filled later by [`complete_load`](Self::complete_load)
     /// or marked as failed by [`set_failed`](Self::set_failed).
-    pub fn reserve_for_load(&mut self) -> StrongHandle<A> {
+    pub fn reserve_for_load(&mut self) -> Handle<A> {
         match self.empty_slot {
             Some(index) => {
                 let slot = self.storage.get_mut(index as usize).unwrap();
@@ -119,7 +119,7 @@ impl<A: Asset> AssetStorage<A> {
                 let next_empty = slot.next_empty.take();
                 self.empty_slot = next_empty;
 
-                StrongHandle::new(index, generation, ref_marker)
+                Handle::new(index, generation, ref_marker)
             }
             None => {
                 let index = self.storage.len() as u32;
@@ -133,7 +133,7 @@ impl<A: Asset> AssetStorage<A> {
                     ref_marker: Some(Arc::clone(&ref_marker)),
                 });
 
-                StrongHandle::new(index, generation, ref_marker)
+                Handle::new(index, generation, ref_marker)
             }
         }
     }
@@ -209,7 +209,7 @@ impl<A: Asset> AssetStorage<A> {
 }
 
 impl<A: Asset> ErasedStorage for AssetStorage<A> {
-    fn get_any<'a>(&'a self, handle: GenericHandle) -> AnyAssetState<'a> {
+    fn get_any<'a>(&'a self, handle: WeakGenericHandle) -> AnyAssetState<'a> {
         let Some(typed) = 
             handle.try_into_handle::<A>().ok()
         else {return AnyAssetState::Empty};

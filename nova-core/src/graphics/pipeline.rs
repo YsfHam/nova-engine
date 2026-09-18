@@ -23,7 +23,7 @@ pub(crate) struct MaterialRegistration {
     pub template: MaterialTemplate,
     /// Type-erased adapter: given a GenericHandle + &AssetsManager, returns
     /// &dyn AsBindGroup (borrows the asset from the manager).
-    pub resolve: fn(crate::assets::handle::GenericHandle, &AssetsManager) -> Option<BindGroup>,
+    pub resolve: fn(crate::assets::handle::WeakGenericHandle, &AssetsManager) -> Option<BindGroup>,
 }
 
 pub(crate) struct MaterialRegistry {
