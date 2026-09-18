@@ -38,6 +38,10 @@ impl RenderCache {
         self.texture_cache.get(&handle).unwrap()
     }
 
+    pub(crate) fn remove_texture(&mut self, handle: Handle<Texture>) {
+        self.texture_cache.remove(&handle);
+    }
+
     /// Returns a reference to a cached `GpuTexture` without creating one.
     /// The caller must have already called `get_or_create_gpu_texture`.
     pub(crate) fn gpu_texture(&self, handle: &Handle<Texture>) -> Option<&GpuTexture> {

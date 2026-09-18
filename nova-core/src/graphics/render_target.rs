@@ -1,7 +1,7 @@
 use std::{any::TypeId, cell::RefMut};
 
 use crate::{
-    assets::AssetsManager, graphics::{
+    assets::{AssetState, AssetsManager}, graphics::{
         buffer::{Offset, StagingBufferPool}, draw_batch::DrawBatch, geometry::GeometryPool, material::{BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry}, pipeline::{MaterialRegistration, PipelineCache}, render::{RenderCache, RenderContext, RenderContextRef}, render_pass::{IndexFormat, RenderPass, RenderPassDescriptor}, texture::{GpuTexture, TextureConfig, TextureUsages}, uniform::UniformBuffer,
     },
 };
@@ -413,8 +413,7 @@ fn prepare_batches<'a>(
             let registration = material_registry.get(&batch.material.type_id)?;
 
             // Resolve the material asset and call as_bind_group().
-            let as_bind_group = (registration.resolve)(batch.material, assets)?;
-            let bind_group = as_bind_group.as_bind_group();
+            let bind_group = (registration.resolve)(batch.material, assets)?;
 
             Some(PreparedBatch {
                 batch,
@@ -574,9 +573,17 @@ fn build_material_bind_group(req: BindGroupBuildRequest<'_>) -> wgpu::BindGroup 
     // Ensure all textures and samplers are in the cache (requires &mut).
     for entry in &bind_group.entries {
         if let BindGroupEntry::Texture { texture, .. } = entry {
-            let Some(tex) = assets.get_asset(*texture) else { continue };
-            render_cache.get_or_create_gpu_texture(*texture, device, queue, tex);
-            render_cache.get_or_create_sampler(tex.sampler_config(), device);
+            let tex = assets.get_asset(*texture);
+            match tex {
+                AssetState::Ready(tex) => {
+                    render_cache.get_or_create_gpu_texture(*texture, device, queue, tex);
+                    render_cache.get_or_create_sampler(tex.sampler_config(), device);
+                }
+                AssetState::Empty => {
+                    render_cache.remove_texture(*texture);
+                }
+                _ => ()
+            }
         }
     }
 
@@ -599,7 +606,7 @@ fn build_material_bind_group(req: BindGroupBuildRequest<'_>) -> wgpu::BindGroup 
                 }
             }
             BindGroupEntry::Texture { binding_slot, sampler_binding_slot, texture, .. } => {
-                if let Some(tex) = assets.get_asset(*texture) {
+                if let AssetState::Ready(tex) = assets.get_asset(*texture) {
                     if let Some(gpu) = render_cache.gpu_texture(texture) {
                         entries.push(wgpu::BindGroupEntry {
                             binding: *binding_slot,

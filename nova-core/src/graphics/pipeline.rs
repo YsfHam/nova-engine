@@ -1,10 +1,8 @@
 use std::{any::TypeId, collections::HashMap};
 
 use crate::{
-    assets::AssetsManager,
-    graphics::{
-        material::{BindGroupLayout, MaterialTemplate},
-        shader::Shader,
+    assets::AssetsManager, graphics::{
+        material::{BindGroup, BindGroupLayout, MaterialTemplate}, shader::Shader,
     },
 };
 
@@ -25,7 +23,7 @@ pub(crate) struct MaterialRegistration {
     pub template: MaterialTemplate,
     /// Type-erased adapter: given a GenericHandle + &AssetsManager, returns
     /// &dyn AsBindGroup (borrows the asset from the manager).
-    pub resolve: fn(crate::assets::handle::GenericHandle, &AssetsManager) -> Option<&dyn crate::graphics::material::AsBindGroup>,
+    pub resolve: fn(crate::assets::handle::GenericHandle, &AssetsManager) -> Option<BindGroup>,
 }
 
 pub(crate) struct MaterialRegistry {
@@ -46,9 +44,10 @@ impl MaterialRegistry {
             MaterialRegistration {
                 template,
                 resolve: |handle, assets| {
-                    let any = assets.get_asset_any(handle)?;
+                    let any = assets.get_asset_any(handle);
                     any.downcast_ref::<M>()
                         .map(|m| m as &dyn crate::graphics::material::AsBindGroup)
+                        .map(|bg| bg.as_bind_group())
                 },
             },
         );

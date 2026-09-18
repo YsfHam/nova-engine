@@ -5,7 +5,7 @@ use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{Ac
 
 #[cfg(feature = "egui")]
 use crate::graphics::frame::Frame;
-use crate::{EngineResult, app::{Application, ApplicationContext, ApplicationProxy}, window::ControlFlow};
+use crate::{EngineResult, app::{Application, ApplicationContext, ApplicationProxy}, assets::AssetsManager, window::ControlFlow};
 
 impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -58,8 +58,7 @@ impl<P: ApplicationProxy> Application<P> {
 
             WindowEvent::RedrawRequested => {
                 Self::on_update(proxy, ctx, self.frame_time, self.frame_clock.restart());
-                ctx.assets_manager.drain_loaded();
-                ctx.assets_manager.cleanup_offloaded();
+                Self::update_assets(&mut ctx.assets_manager);
                 Self::on_render(proxy, ctx)?;
 
                 ctx.input_state.clear();
@@ -102,6 +101,11 @@ impl<P: ApplicationProxy> Application<P> {
         }
         
         Ok(())
+    }
+
+    fn update_assets(assets_manager: &mut AssetsManager) {
+        assets_manager.drain_loaded();
+        assets_manager.cleanup_offloaded();
     }
 
     #[cfg(feature = "egui")]

@@ -1,9 +1,9 @@
 use std::{any::Any, sync::Arc};
 
-use crate::assets::{Asset, error::AssetError, handle::{GenericHandle, Handle, StrongHandle}};
+use crate::assets::{AnyAssetState, Asset, AssetMutState, AssetState, error::AssetError, handle::{GenericHandle, Handle, StrongHandle}};
 
 pub(crate) trait ErasedStorage {
-    fn get_any(&self, handle: GenericHandle) -> Option<&dyn Any>;
+    fn get_any<'a>(&'a self, handle: GenericHandle) -> AnyAssetState<'a>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     /// Removes all `Ready` assets whose ref count has dropped to 1 (only the
@@ -17,32 +17,39 @@ pub(crate) trait ErasedStorage {
     fn set_failed_any(&mut self, index: u32, generation: u32, error: AssetError) -> bool;
 }
 
-enum SlotState {
+enum SlotState<A: Asset> {
     Loading,
-    Ready,
+    Ready(A),
     Failed(AssetError),
     Empty,
 }
 
-/// The load state of an asset slot, queryable via [`AssetStorage::asset_state`].
-#[derive(Debug, Clone)]
-pub enum AssetState {
-    /// Asset is being loaded on a worker thread.
-    Loading,
-    /// Asset is ready and available.
-    Ready,
-    /// Asset loading failed. The slot retains this state (and its generation)
-    /// so the caller can distinguish "load failed" from "handle invalid".
-    Failed(AssetError),
-    /// Slot is empty / handle is stale (generation mismatch).
-    Empty,
+impl<'a, A: Asset> From<&'a SlotState<A>> for AssetState<'a, A> {
+    fn from(value: &'a SlotState<A>) -> Self {
+        match value {
+            SlotState::Loading => Self::Loading,
+            SlotState::Ready(asset) => Self::Ready(asset),
+            SlotState::Failed(error) => Self::Failed(error.clone()),
+            SlotState::Empty => Self::Empty,
+        }
+    }
+}
+
+impl<'a, A: Asset> From<&'a mut SlotState<A>> for AssetMutState<'a, A> {
+    fn from(value: &'a mut SlotState<A>) -> Self {
+        match value {
+            SlotState::Loading => Self::Loading,
+            SlotState::Ready(asset) => Self::Ready(asset),
+            SlotState::Failed(error) => Self::Failed(error.clone()),
+            SlotState::Empty => Self::Empty,
+        }
+    }
 }
 
 struct Slot<A: Asset> {
-    data: Option<A>,
     next_empty: Option<u32>,
     generation: u32,
-    state: SlotState,
+    state: SlotState<A>,
     /// Shared ref-count marker. Cloned into every `StrongHandle` issued
     /// from this slot. When `Arc::strong_count` drops to 1 (only this
     /// slot holds a clone), the asset is eligible for off-loading.
@@ -66,64 +73,31 @@ impl<A: Asset> AssetStorage<A> {
     }
 
     pub fn insert(&mut self, asset: A) -> StrongHandle<A> {
-        match self.empty_slot {
-            Some(empty_slot) => {
-                let (handle, next_empty) = self.update_slot(empty_slot, asset);
-                self.empty_slot = next_empty;
-                handle
-            }
-            None => self.add_asset(asset)
-        }
+       let handle = self.reserve_for_load();
+       let slot = self.storage.get_mut(handle.index as usize).unwrap();
+       slot.state = SlotState::Ready(asset);
+       handle
     }
 
-    pub fn get(&self, handle: Handle<A>) -> Option<&A> {
-        let slot = self.storage.get(handle.index as usize)?;
+    pub fn get(&self, handle: Handle<A>) -> AssetState<'_, A> {
+        let Some(slot) = 
+            self.storage.get(handle.index as usize)
+        else {return AssetState::Empty };
         if slot.generation == handle.generation {
-            slot.data.as_ref()
+            AssetState::from(&slot.state)
         } else {
-            None
+            AssetState::Empty
         }
     }
 
-    pub fn get_mut(&mut self, handle: Handle<A>) -> Option<&mut A> {
-        let slot = self.storage.get_mut(handle.index as usize)?;
+    pub fn get_mut(&mut self, handle: Handle<A>) -> AssetMutState<'_, A> {
+        let Some(slot) = 
+            self.storage.get_mut(handle.index as usize)
+        else {return AssetMutState::Empty };
         if slot.generation == handle.generation {
-            slot.data.as_mut()
+            AssetMutState::from(&mut slot.state)
         } else {
-            None
-        }
-    }
-
-    pub fn remove(&mut self, handle: Handle<A>) -> Option<A> {
-        let slot = self.storage.get_mut(handle.index as usize)?;
-        if slot.generation != handle.generation {
-            return None;
-        }
-        let data = slot.data.take();
-        slot.next_empty = self.empty_slot;
-        self.empty_slot = Some(handle.index);
-        // Bump generation so stale handles no longer match
-        slot.generation = slot.generation.wrapping_add(1);
-        slot.state = SlotState::Empty;
-        slot.ref_marker = None;
-        data
-    }
-
-    /// Returns the [`AssetState`] for a given handle.
-    /// Returns [`AssetState::Empty`] if the handle is stale (generation mismatch
-    /// or out of bounds).
-    pub fn asset_state(&self, handle: Handle<A>) -> AssetState {
-        let Some(slot) = self.storage.get(handle.index as usize) else {
-            return AssetState::Empty;
-        };
-        if slot.generation != handle.generation {
-            return AssetState::Empty;
-        }
-        match &slot.state {
-            SlotState::Loading => AssetState::Loading,
-            SlotState::Ready => AssetState::Ready,
-            SlotState::Failed(error) => AssetState::Failed(error.clone()),
-            SlotState::Empty => AssetState::Empty,
+            AssetMutState::Empty
         }
     }
 
@@ -141,7 +115,6 @@ impl<A: Asset> AssetStorage<A> {
 
                 let ref_marker = Arc::new(());
                 slot.ref_marker = Some(Arc::clone(&ref_marker));
-                slot.data = None;
                 slot.state = SlotState::Loading;
                 let next_empty = slot.next_empty.take();
                 self.empty_slot = next_empty;
@@ -154,7 +127,6 @@ impl<A: Asset> AssetStorage<A> {
                 let ref_marker = Arc::new(());
 
                 self.storage.push(Slot {
-                    data: None,
                     next_empty: None,
                     generation,
                     state: SlotState::Loading,
@@ -179,8 +151,7 @@ impl<A: Asset> AssetStorage<A> {
         if slot.generation != generation || !matches!(slot.state, SlotState::Loading) {
             return false;
         }
-        slot.data = Some(asset);
-        slot.state = SlotState::Ready;
+        slot.state = SlotState::Ready(asset);
         true
     }
 
@@ -199,41 +170,8 @@ impl<A: Asset> AssetStorage<A> {
         if slot.generation != generation || !matches!(slot.state, SlotState::Loading) {
             return false;
         }
-        slot.data = None;
         slot.state = SlotState::Failed(error);
         true
-    }
-
-    fn add_asset(&mut self, asset: A) -> StrongHandle<A> {
-        let index = self.storage.len() as u32;
-        let generation = 0;
-        let ref_marker = Arc::new(());
-
-        self.storage.push(Slot {
-            data: Some(asset),
-            next_empty: None,
-            generation,
-            state: SlotState::Ready,
-            ref_marker: Some(Arc::clone(&ref_marker)),
-        });
-
-        StrongHandle::new(index, generation, ref_marker)
-    }
-
-    fn update_slot(&mut self, index: u32, asset: A) -> (StrongHandle<A>, Option<u32>) {
-        let slot = self.storage.get_mut(index as usize).unwrap();
-
-        let generation = slot.generation;
-
-        // New ref marker for the new asset lifetime.
-        let ref_marker = Arc::new(());
-        slot.ref_marker = Some(Arc::clone(&ref_marker));
-
-        let next_empty = slot.next_empty.take();
-        slot.data = Some(asset);
-        slot.state = SlotState::Ready;
-
-        (StrongHandle::new(index, generation, ref_marker), next_empty)
     }
 
     /// Removes all `Ready` assets whose ref count has dropped to 1 (only the
@@ -250,15 +188,14 @@ impl<A: Asset> AssetStorage<A> {
             let slot = &self.storage[i];
 
             // Only off-load Ready assets with no outstanding strong handles.
-            let should_offload = matches!(slot.state, SlotState::Ready)
-                && slot.ref_marker.as_ref().map_or(false, |rc| Arc::strong_count(rc) == 1);
+            let should_offload = 
+                slot.ref_marker.as_ref().map_or(false, |rc| Arc::strong_count(rc) == 1);
 
             if !should_offload {
                 continue;
             }
 
             let slot = &mut self.storage[i];
-            slot.data = None;
             slot.next_empty = self.empty_slot;
             self.empty_slot = Some(i as u32);
             slot.generation = slot.generation.wrapping_add(1);
@@ -272,10 +209,12 @@ impl<A: Asset> AssetStorage<A> {
 }
 
 impl<A: Asset> ErasedStorage for AssetStorage<A> {
-    fn get_any(&self, handle: GenericHandle) -> Option<&dyn Any> {
-        let typed = handle.try_into_handle::<A>().ok()?;
+    fn get_any<'a>(&'a self, handle: GenericHandle) -> AnyAssetState<'a> {
+        let Some(typed) = 
+            handle.try_into_handle::<A>().ok()
+        else {return AnyAssetState::Empty};
         self.get(typed)
-        .map(|a| a as &dyn Any)
+        .into()
     }
 
     fn as_any(&self) -> &dyn Any {

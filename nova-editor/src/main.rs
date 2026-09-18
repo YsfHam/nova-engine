@@ -268,15 +268,10 @@ impl ApplicationProxy for EditorApp {
 
         // Poll the async texture state.
         if let Some(weak) = self.async_texture_weak {
-            let state = ctx.assets_manager.asset_state(weak);
+            let state = ctx.assets_manager.get_asset(weak);
             match state {
                 AssetState::Loading => {}
-                AssetState::Ready => {
-                    // Verify the asset is accessible.
-                    if let Some(tex) = ctx.assets_manager.get_asset(weak) {
-                        // Success — the async load completed and the data is available.
-                        let _ = tex;
-                    }
+                AssetState::Ready(_) => {
                 }
                 AssetState::Failed(err) => {
                     eprintln!("Async texture load failed: {err}");

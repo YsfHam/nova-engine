@@ -1,22 +1,21 @@
 use std::{
-    any::{Any, TypeId},
+    any::TypeId,
     collections::HashMap,
     sync::mpsc,
-    thread,
 };
 use crate::assets::{
-    error::AssetError,
-    handle::{GenericHandle, Handle, StrongHandle},
-    loader::{erase_supplier, ErasedSupplier},
-    storage::{AssetStorage, ErasedStorage},
+    error::AssetError, handle::{GenericHandle, Handle, StrongHandle}, load::{LoadJob, LoadResult, erase_supplier, init_load_job_processor}, storage::{AssetStorage, ErasedStorage},
 };
 
 pub mod handle;
 pub mod error;
 pub mod defaults;
-mod loader;
+mod state;
+mod load;
 mod storage;
-pub use storage::AssetState;
+pub use state::*;
+
+
 /// A type stored in the [`AssetsManager`].
 ///
 /// Assets are inserted directly by the user (or constructed from a file
@@ -27,33 +26,6 @@ pub use storage::AssetState;
 /// and then inserted into the storages from the main thread.
 pub trait Asset: Send + Sync + 'static {}
 
-/// A job sent to a worker thread for async asset loading.
-struct LoadJob {
-    /// Type-erased supplier function — takes no args, produces the asset.
-    supplier: ErasedSupplier,
-    /// Which slot to fill when the load completes.
-    index: u32,
-    generation: u32,
-    /// The asset type's `TypeId` — used to route the result to the right
-    /// storage in `drain_loaded`.
-    type_id: TypeId,
-}
-
-/// A completed load result received from a worker thread.
-enum LoadResult {
-    Ok {
-        type_id: TypeId,
-        index: u32,
-        generation: u32,
-        asset: Box<dyn Any + Send>,
-    },
-    Failed {
-        type_id: TypeId,
-        index: u32,
-        generation: u32,
-        error: AssetError,
-    },
-}
 
 /// Owns asset storages keyed by `TypeId` and a thread pool for async loading.
 ///
@@ -84,33 +56,7 @@ impl AssetsManager {
         let (job_tx, job_rx) = mpsc::channel::<LoadJob>();
         let (result_tx, result_rx) = mpsc::channel::<LoadResult>();
 
-        thread::Builder::new()
-            .name("nova-asset-loader".into())
-            .spawn(move || {
-                // Wait for jobs and execute them.
-                while let Ok(job) = job_rx.recv() {
-                    let LoadJob { supplier, index, generation, type_id } = job;
-                    match supplier() {
-                        Ok(asset) => {
-                            let _ = result_tx.send(LoadResult::Ok {
-                                type_id,
-                                index,
-                                generation,
-                                asset,
-                            });
-                        }
-                        Err(error) => {
-                            let _ = result_tx.send(LoadResult::Failed {
-                                type_id,
-                                index,
-                                generation,
-                                error,
-                            });
-                        }
-                    }
-                }
-            })
-            .expect("failed to spawn asset loader thread");
+        init_load_job_processor(job_rx, result_tx);
 
         Self {
             storages: HashMap::new(),
@@ -124,29 +70,18 @@ impl AssetsManager {
         storage.insert(asset)
     }
 
-    pub fn get_asset<A: Asset>(&self, handle: Handle<A>) -> Option<&A> {
-        let storage = self.get_storage()?;
+    pub fn get_asset<A: Asset>(&self, handle: Handle<A>) -> AssetState<'_, A> {
+        let Some(storage) = 
+            self.get_storage()
+        else {return AssetState::Empty};
         storage.get(handle)
     }
 
-    pub fn get_asset_mut<A: Asset>(&mut self, handle: Handle<A>) -> Option<&mut A> {
-        let storage = self.get_or_create_storage_mut();
+    pub fn get_asset_mut<A: Asset>(&mut self, handle: Handle<A>) -> AssetMutState<'_, A> {
+        let Some(storage) =
+            self.get_storage_mut()
+        else {return AssetMutState::Empty};
         storage.get_mut(handle)
-    }
-
-    pub fn remove_asset<A: Asset>(&mut self, handle: Handle<A>) -> Option<A> {
-        let storage = self.get_or_create_storage_mut();
-        storage.remove(handle)
-    }
-
-    /// Returns the [`AssetState`] for a given handle.
-    /// Returns [`AssetState::Empty`] if the handle is stale or the asset type
-    /// has no storage registered.
-    pub fn asset_state<A: Asset>(&self, handle: Handle<A>) -> AssetState {
-        let Some(storage) = self.get_storage() else {
-            return AssetState::Empty;
-        };
-        storage.asset_state(handle)
     }
 
     /// Retrieves an asset from a [`GenericHandle`] without knowing the concrete
@@ -155,8 +90,10 @@ impl AssetsManager {
     /// The `GenericHandle`'s `type_id` must match the stored asset type, and
     /// the generation must match. Returns `None` for stale or unregistered
     /// handles.
-    pub fn get_asset_any(&self, handle: GenericHandle) -> Option<&dyn Any> {
-        let storage = self.storages.get(&handle.type_id)?;
+    pub fn get_asset_any(&self, handle: GenericHandle) -> AnyAssetState<'_> {
+        let Some(storage) = 
+            self.storages.get(&handle.type_id)
+        else {return AnyAssetState::Empty};
         storage.get_any(handle)
     }
 
@@ -252,6 +189,12 @@ impl AssetsManager {
             .as_any_mut()
             .downcast_mut()
             .unwrap()
+    }
+
+    fn get_storage_mut<A: Asset>(&mut self) -> Option<&mut AssetStorage<A>> {
+        self.storages
+            .get_mut(&TypeId::of::<A>())
+            .and_then(|any| any.as_any_mut().downcast_mut())
     }
 
     fn get_storage<A: Asset>(&self) -> Option<&AssetStorage<A>> {
