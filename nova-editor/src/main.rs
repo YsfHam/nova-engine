@@ -299,11 +299,19 @@ impl ApplicationProxy for EditorApp {
         self.render_scene(ctx);
     }
 
-    fn on_gui(&mut self, ui: &mut egui::Ui) {
+    fn on_gui(&mut self, ctx: &ApplicationContext, ui: &mut egui::Ui) {
         let tex_id = self.scene_texture.as_ref().map(|h| h.id);
         DockArea::new(&mut self.dock_state)
             .style(Style::from_egui(ui.style().as_ref()))
             .show_inside(ui, &mut EditorTabViewer { scene_texture_id: tex_id });
+
+        egui::Window::new("AppInfo")
+        .resizable([true, true])
+        .show(ui, |ui| {
+            ui.label(format!("FPS: {:.1}", ctx.info().fps()));
+            ui.label(format!("total time: {:.2} s", ctx.info().total_time.as_secs_f64()));
+            ui.label(format!("total_frames: {}", ctx.info().total_frames));
+        });
 
         egui::Window::new("Data Window")
         .show(ui, |ui| {

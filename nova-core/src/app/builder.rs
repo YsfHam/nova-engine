@@ -17,7 +17,7 @@ impl<P: ApplicationProxy> ApplicationBuilder<P> {
             gfx_config: GraphicsConfiguration::default(),
             control_flow: ControlFlow::Poll,
             proxy,
-            frame_rate: 60,
+            frame_rate: 240,
             plugins: Plugins::new(),
         }
     }

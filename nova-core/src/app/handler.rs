@@ -45,7 +45,7 @@ impl<P: ApplicationProxy> Application<P> {
 
         #[cfg(feature = "egui")]
         {
-            let response = ctx.egui_state.on_event(&event);
+            let response = ctx.egui_state.borrow_mut().on_event(&event);
             if response.consumed {
                 return Ok(());
             }
@@ -79,6 +79,7 @@ impl<P: ApplicationProxy> Application<P> {
     }
 
     fn on_update(proxy: &mut P, ctx: &mut ApplicationContext, frame_time: Duration, mut dt: Duration) {
+        ctx.info.total_time += dt;
         while dt >= frame_time {
             proxy.on_update(ctx, frame_time);
             dt -= frame_time;
@@ -98,6 +99,7 @@ impl<P: ApplicationProxy> Application<P> {
 
             ctx.render_ctx.get_mut().submit_commands();
             frame.present(&ctx.render_ctx);
+            ctx.info.record_frame();
         }
         
         Ok(())
@@ -109,11 +111,12 @@ impl<P: ApplicationProxy> Application<P> {
     }
 
     #[cfg(feature = "egui")]
-    fn egui_render(proxy: &mut P, ctx: &mut ApplicationContext, frame: &mut Frame) {
+    fn egui_render(proxy: &mut P, ctx: &ApplicationContext, frame: &mut Frame) {
 
         let render_target = frame.render_target(&ctx.render_ctx);
-        ctx.egui_state.ui(render_target, |ui| {
-            proxy.on_gui(ui);
+        let mut egui_state = ctx.egui_state.borrow_mut();
+        egui_state.ui(render_target, |ui| {
+            proxy.on_gui(&ctx, ui);
         });
     }
 }
