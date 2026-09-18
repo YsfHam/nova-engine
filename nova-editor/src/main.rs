@@ -171,17 +171,19 @@ impl EditorApp {
                 .with_color(Color::YELLOW)
                 .with_scale(vec2(100.0, 100.0))
                 .with_angle(Angle::Degrees(-t * 10.0))
-            )
+            );
         }
 
         // Animated circles — pulsing radius and drifting position.
         if let Some(mat) = self.circle_material {
             // Central circle — pulsing.
             let pulse = 50.0 + (t * 4.0).sin() * 20.0;
-            renderer.draw(&ShapeInstance::<CircleShape>::new(mat)
+            renderer.draw(&ShapeInstance::new(
+                CircleShape::default()
                 .with_position(vec2(cx, cy))
-                .with_scale(vec2(pulse * 2.0, pulse * 2.0))
-                .with_color(Color { r: 1.0, g: 0.9, b: 0.2, a: 0.6 })
+                .with_radius(pulse * 2.0)
+                .with_color(Color { r: 1.0, g: 0.9, b: 0.2, a: 0.6 }),
+                mat)
                 .with_z_index(2));
 
             // Small orbiting circles.
@@ -196,10 +198,12 @@ impl EditorApp {
                     1 => Color { r: 0.3, g: 0.9, b: 0.9, a: 0.8 },
                     _ => Color { r: 0.9, g: 0.7, b: 0.3, a: 0.8 },
                 };
-                renderer.draw(&ShapeInstance::<CircleShape>::new(mat)
+                renderer.draw(&ShapeInstance::new(
+                    CircleShape::default()
                     .with_position(vec2(x, y))
-                    .with_scale(vec2(size * 2.0, size * 2.0))
-                    .with_color(col)
+                    .with_radius(size * 2.0)
+                    .with_color(col),
+                    mat)
                     .with_z_index(3));
             }
         }

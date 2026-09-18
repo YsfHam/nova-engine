@@ -27,8 +27,8 @@ impl<'a> Render2D<'a> {
     /// data layout and geometry; the material handle must be compatible
     /// with `S::Material`.
     pub fn draw<S: Shape2D>(&mut self, instance: &ShapeInstance<S>) {
-        let data = instance.build();
-        self.batcher.add::<S>(instance.material.into_generic(), &data, instance.z_index);
+        let data = instance.instance();
+        self.batcher.add::<S>(instance.material, &data, instance.z_index);
     }
 
     pub fn end_scene(self, pass_descriptor: RenderPassDescriptor, assets: &AssetsManager) {

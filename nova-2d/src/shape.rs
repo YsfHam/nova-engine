@@ -1,8 +1,9 @@
+
+use std::ops::{Deref, DerefMut};
+
 use bytemuck::Pod;
 use nova_core::{
-    assets::handle::WeakHandle,
-    graphics::{color::Color, geometry::GeometryRef, material::Material},
-    math::{Angle, Vec2},
+    assets::handle::{WeakGenericHandle, WeakHandle}, graphics::{color::Color, geometry::GeometryRef, material::Material}, math::{Angle, Vec2, vec2},
 };
 
 use crate::utils::RectF32;
@@ -31,22 +32,11 @@ pub trait Shape2D: Send + Sync + 'static {
     /// can be uploaded directly to the instance buffer.
     type InstanceData: Pod + Clone + Send + Sync + 'static;
 
-    /// The material type this shape is compatible with. The material's
-    /// `MaterialTemplate::instance_layout` must match the byte layout of
-    /// `InstanceData`.
-    type Material: Material;
-
     /// The shared geometry all instances of this shape use.
     fn geometry() -> GeometryRef;
 
     /// Builds the instance data from common fields.
-    fn build_instance(
-        position: Vec2,
-        rotation: Angle,
-        scale: Vec2,
-        color: Color,
-        uv: RectF32,
-    ) -> Self::InstanceData;
+    fn instance(&self) -> Self::InstanceData;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -57,34 +47,82 @@ pub trait Shape2D: Send + Sync + 'static {
 /// full 2D transform (position, rotation, scale) and UV rect.
 ///
 /// Compatible material: [`SpriteMaterial`](crate::materials::SpriteMaterial).
-pub struct RectangleShape;
+pub struct RectangleShape {
+    pub position: Vec2,
+    pub angle: Angle,
+    pub scale: Vec2,
+    pub color: Color,
+    pub uv: RectF32,
+}
+
+impl Default for RectangleShape {
+    fn default() -> Self {
+        Self {
+            position: Vec2::default(),
+            angle: Angle::Radians(0.0),
+            scale: vec2(1.0, 1.0),
+            color: Color::WHITE,
+            uv: RectF32 {
+                top: 0.0,
+                left: 0.0,
+                bottom: 1.0,
+                right: 1.0,
+            },
+        }
+    }
+}
+
+impl RectangleShape {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_position(mut self, position: Vec2) -> Self {
+        self.position = position;
+        self
+    }
+
+    pub fn with_angle(mut self, angle: Angle) -> Self {
+        self.angle = angle;
+        self
+    }
+
+    pub fn with_scale(mut self, scale: Vec2) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn with_uv(mut self, uv: RectF32) -> Self {
+        self.uv = uv;
+        self
+    }
+}
+
 
 impl Shape2D for RectangleShape {
     type InstanceData = crate::instance::RectInstance;
-    type Material = crate::materials::SpriteMaterial;
 
     fn geometry() -> GeometryRef {
         crate::batcher::quad_geometry()
     }
 
-    fn build_instance(
-        position: Vec2,
-        rotation: Angle,
-        scale: Vec2,
-        color: Color,
-        uv: RectF32,
-    ) -> Self::InstanceData {
+    fn instance(&self) -> Self::InstanceData {
         Self::InstanceData {
-            position: position.into(),
-            scale: scale.into(),
-            color: color.into(),
+            position: self.position.into(),
+            scale: self.scale.into(),
+            color: self.color.into(),
             uv_rect: [
-                uv.left,
-                uv.top,
-                uv.right,
-                uv.bottom
+                self.uv.left,
+                self.uv.top,
+                self.uv.right,
+                self.uv.bottom
             ],
-            rotation: rotation.into()
+            rotation: self.angle.into(),
         }
     }
 }
@@ -97,27 +135,56 @@ impl Shape2D for RectangleShape {
 /// shader discards pixels outside the unit circle.
 ///
 /// Compatible material: [`CircleMaterial`](crate::materials::CircleMaterial).
-pub struct CircleShape;
+pub struct CircleShape {
+    pub position: Vec2,
+    pub radius: f32,
+    pub color: Color,
+}
+
+impl Default for CircleShape {
+    fn default() -> Self {
+        Self {
+            position: Vec2::ZERO,
+            radius: 1.0,
+            color: Color::WHITE
+        }
+    }
+}
+
+impl CircleShape {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_position(mut self, position: Vec2) -> Self {
+        self.position = position;
+        self
+    }
+
+    pub fn with_radius(mut self, radius: f32) -> Self {
+        self.radius = radius;
+        self
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+}
 
 impl Shape2D for CircleShape {
     type InstanceData = crate::instance::CircleInstance;
-    type Material = crate::materials::CircleMaterial;
 
     fn geometry() -> GeometryRef {
         crate::batcher::quad_geometry()
     }
 
-    fn build_instance(
-        position: Vec2,
-        _: Angle,
-        scale: Vec2,
-        color: Color,
-        _: RectF32,
-    ) -> Self::InstanceData {
-        // The circle's radius is derived from the scale (average of x/y).
-        // The quad spans -0.5..0.5, so scale maps directly to diameter.
-        let radius = (scale.x + scale.y) * 0.25;
-        Self::InstanceData::new(position, radius, color)
+    fn instance(&self) -> Self::InstanceData {
+        Self::InstanceData {
+            position: self.position.into(),
+            radius: self.radius,
+            color: self.color.into(),
+        }
     }
 }
 
@@ -130,53 +197,19 @@ impl Shape2D for CircleShape {
 /// Bundles the shape's common fields (position, angle, scale, color, UV)
 /// with a material handle and z-index. The renderer calls
 /// `Shape2D::build_instance` to produce the GPU instance data.
-#[derive(Clone)]
 pub struct ShapeInstance<S: Shape2D> {
-    pub position: Vec2,
-    pub angle: Angle,
-    pub scale: Vec2,
-    pub color: Color,
-    pub uv: RectF32,
-    pub material: WeakHandle<S::Material>,
+    pub shape: S,
+    pub material: WeakGenericHandle,
     pub z_index: u32,
 }
 
 impl<S: Shape2D> ShapeInstance<S> {
-    pub fn new(material: WeakHandle<S::Material>) -> Self {
+    pub fn new<M: Material>(shape: S, material: WeakHandle<M>) -> Self {
         Self {
-            position: Vec2::ZERO,
-            angle: Angle::ZERO,
-            scale: Vec2::new(1.0, 1.0),
-            color: Color::WHITE,
-            uv: RectF32 {
-                top: 0.0,
-                left: 0.0,
-                bottom: 1.0,
-                right: 1.0,
-            },
-            material,
+            shape,
+            material: material.into_generic(),
             z_index: 0,
         }
-    }
-
-    pub fn with_position(mut self, position: Vec2) -> Self {
-        self.position = position;
-        self
-    }
-
-    pub fn with_scale(mut self, scale: Vec2) -> Self {
-        self.scale = scale;
-        self
-    }
-
-    pub fn with_angle(mut self, angle: Angle) -> Self {
-        self.angle = angle;
-        self
-    }
-
-    pub fn with_color(mut self, color: Color) -> Self {
-        self.color = color;
-        self
     }
 
     pub fn with_z_index(mut self, z_index: u32) -> Self {
@@ -184,13 +217,22 @@ impl<S: Shape2D> ShapeInstance<S> {
         self
     }
 
-    pub fn with_uv(mut self, uv: RectF32) -> Self {
-        self.uv = uv;
-        self
-    }
-
     /// Builds the GPU instance data for this shape instance.
-    pub fn build(&self) -> S::InstanceData {
-        S::build_instance(self.position, self.angle, self.scale, self.color, self.uv)
+    pub fn instance(&self) -> S::InstanceData {
+        self.shape.instance()
+    }
+}
+
+impl<S: Shape2D> Deref for ShapeInstance<S> {
+    type Target = S;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shape
+    }
+}
+
+impl<S: Shape2D> DerefMut for ShapeInstance<S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.shape
     }
 }

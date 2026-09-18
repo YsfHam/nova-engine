@@ -1,6 +1,7 @@
+use std::ops::{Deref, DerefMut};
+
 use nova_core::{
-    assets::handle::WeakHandle,
-    math::Vec2,
+    assets::handle::WeakHandle, graphics::color::Color, math::{Angle, Vec2},
 };
 
 use crate::{
@@ -9,14 +10,60 @@ use crate::{
     utils::RectF32,
 };
 
-/// A sprite: a textured rectangle. This is a convenience alias for
-/// `ShapeInstance<RectangleShape>` — it carries a position, scale, rotation,
-/// color, UV rect, material handle, and z-index.
-pub type Sprite = ShapeInstance<RectangleShape>;
+pub struct Sprite {
+    shape_instance: ShapeInstance<RectangleShape>,
+}
 
-/// Creates a new sprite with the given sprite material handle.
-pub fn sprite(material: WeakHandle<crate::materials::SpriteMaterial>) -> Sprite {
-    ShapeInstance::new(material)
+impl Sprite {
+    pub fn new(material: WeakHandle<SpriteMaterial>) -> Self {
+        Self {
+            shape_instance: ShapeInstance::new(RectangleShape::default(), material)
+        }
+    }
+
+    pub fn with_position(mut self, position: Vec2) -> Self {
+        self.position = position;
+        self
+    }
+
+    pub fn with_angle(mut self, angle: Angle) -> Self {
+        self.angle = angle;
+        self
+    }
+
+    pub fn with_scale(mut self, scale: Vec2) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn with_uv(mut self, uv: RectF32) -> Self {
+        self.uv = uv;
+        self
+    }
+
+    pub fn with_z_index(mut self, z_index: u32) -> Self {
+        self.shape_instance = self.shape_instance.with_z_index(z_index);
+        self
+    }
+}
+
+impl Deref for Sprite {
+    type Target = ShapeInstance<RectangleShape>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shape_instance
+    }
+}
+
+impl DerefMut for Sprite {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.shape_instance
+    }
 }
 
 /// A grid-based sprite atlas: a texture divided into fixed-size cells.
@@ -75,7 +122,9 @@ impl SpriteAtlas {
         let right = px_right / self.atlas_size.x;
         let bottom = px_bottom / self.atlas_size.y;
 
-        Some(Sprite::new(self.material).with_uv(RectF32 { top, left, bottom, right }))
+        Some(Sprite::new(self.material)
+            .with_uv(RectF32 { top, left, bottom, right }),
+        )
     }
 
     /// Returns the sprite at the given grid coordinates (col, row).
