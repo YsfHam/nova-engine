@@ -1,7 +1,7 @@
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop}};
+use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{self, ActiveEventLoop}};
 
 #[cfg(feature = "egui")]
 use crate::graphics::frame::Frame;
@@ -28,9 +28,21 @@ impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
         }
     }
 
-    fn new_events(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, _cause: winit::event::StartCause) {
-        if self.frame_clock.elapsed() >= self.frame_time {
-            self.ctx.as_ref().map(|ctx| ctx.request_window_redraw());
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: winit::event::StartCause) {
+        if self.control_flow == ControlFlow::Poll {
+            self.ctx.as_mut().map(|ctx| {
+                if ctx.framerate_handler.update_next_render_instant() {
+                    ctx.request_window_redraw();
+                }
+            });
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.control_flow == ControlFlow::Poll {
+            if let Some(ctx) = self.ctx.as_ref() {
+                event_loop.set_control_flow(event_loop::ControlFlow::WaitUntil(ctx.framerate_handler.get_next_render_instant()));
+            }
         }
     }
 }
@@ -39,7 +51,6 @@ impl<P: ApplicationProxy> ApplicationHandler for Application<P> {
 impl<P: ApplicationProxy> Application<P> {
     fn process_events(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) -> EngineResult<()> {
 
-        
         let ctx = self.ctx.as_mut().unwrap();
         let proxy = &mut self.proxy;
 
@@ -51,20 +62,24 @@ impl<P: ApplicationProxy> Application<P> {
             }
         }
 
+
         ctx.input_state.process_events(&event);
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::RedrawRequested => {
-                Self::on_update(proxy, ctx, self.frame_time, self.frame_clock.restart());
+                let (frame_time, dt) = ctx.framerate_handler.elapsed();
+                Self::on_update(proxy, ctx, frame_time, dt);
                 Self::update_assets(&mut ctx.assets_manager);
                 Self::on_render(proxy, ctx)?;
-
+                
                 ctx.input_state.clear();
 
                 if self.control_flow == ControlFlow::Poll {
-                    event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(Instant::now() + self.frame_time));
+                    if ctx.framerate_handler.reset_next_render_instant(frame_time) {
+                        ctx.request_window_redraw();
+                    }
                 }
             }
 

@@ -4,10 +4,11 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 
 mod handler;
 mod builder;
+pub mod framerate;
 
 pub use builder::ApplicationBuilder;
 
-use crate::{EngineResult, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef, render_target::TextureRenderTarget}, input::Input, plugin::Plugins, time::Clock, window::{ControlFlow, WindowApi, WindowConfig}};
+use crate::{EngineResult, app::framerate::{FramerateHandler, FramerateLimit}, assets::{AssetsManager, defaults::DefaultAssets}, egui::EguiState, errors::EngineError, graphics::{config::GraphicsConfiguration, context::GraphicsContext, frame::Frame, render::RenderContextRef, render_target::TextureRenderTarget}, input::Input, plugin::Plugins, window::{ControlFlow, WindowApi, WindowConfig}};
 
 pub struct AppInfo {
     pub total_frames: u64,
@@ -68,6 +69,8 @@ pub struct ApplicationContext {
     pub(crate) input_state: Input,
 
     pub(crate) egui_state: RefCell<EguiState>,
+
+    pub(crate) framerate_handler: FramerateHandler,
 }
 
 impl ApplicationContext {
@@ -110,9 +113,8 @@ pub struct Application<P: ApplicationProxy> {
     proxy: P,
     control_flow: ControlFlow,
     ctx: Option<ApplicationContext>,
-    frame_clock: Clock,
-    frame_time: Duration,
     plugins: Plugins,
+    framerate_limit: FramerateLimit,
 
     engine_error: Option<EngineError>,
 }
@@ -136,9 +138,9 @@ impl<P: ApplicationProxy> Application<P> {
             proxy: builder.proxy,
             control_flow: builder.control_flow,
             ctx: None,
-            frame_clock: Clock::new(),
-            frame_time: Duration::from_secs_f64(1.0 / builder.frame_rate.max(1) as f64),
             plugins: builder.plugins,
+            framerate_limit: builder.framerate_limit,
+            
             engine_error: None,
         }
     }
@@ -164,6 +166,8 @@ impl<P: ApplicationProxy> Application<P> {
 
         let input_state = Input::new(window_api.window.scale_factor());
 
+        let framerate_handler = FramerateHandler::new(self.framerate_limit, &window_api.window);
+
         let mut app_ctx = ApplicationContext {
             window_api,
             render_ctx,
@@ -173,7 +177,8 @@ impl<P: ApplicationProxy> Application<P> {
             info: AppInfo::new(),
 
             input_state,
-            egui_state: RefCell::new(egui_state)
+            egui_state: RefCell::new(egui_state),
+            framerate_handler
         };
 
         self.plugins.init(&mut app_ctx)?;

@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use nova::{
     DefaultPlugins, core::{
-        EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy}, assets::{AssetState, handle::Handle}, graphics::{
-            color::Color, frame::Frame, material::{BindGroup, BindGroupEntry}, render_pass::RenderPassDescriptor, render_target::TextureRenderTarget, sampler::{FilterMode, SamplerConfig}, shader::ShaderStage, texture::{Texture, TextureConfig, TextureFormat, TextureSize}, uniform::UniformValue,
+        EngineResult, app::{ApplicationBuilder, ApplicationContext, ApplicationProxy, framerate::FramerateLimit}, assets::{AssetState, handle::Handle}, graphics::{
+            color::Color, config::PresentMode, frame::Frame, material::{BindGroup, BindGroupEntry}, render_pass::RenderPassDescriptor, render_target::TextureRenderTarget, sampler::{FilterMode, SamplerConfig}, shader::ShaderStage, texture::{Texture, TextureConfig, TextureFormat, TextureSize}, uniform::UniformValue,
         }, math::{Angle, vec2}, time::Clock,
     }, egui::{self, EguiTextureHandle}, nova2d::{
         camera::Camera2D,
@@ -369,6 +369,10 @@ fn main() -> EngineResult<()> {
             config.with_size((1000, 800))
             .with_title("Nova editor")
         })
+        .alter_graphics_configuration(|config| {
+            config.with_present_mode(PresentMode::Mailbox)
+        })
+        .with_frame_rate_limit(FramerateLimit::Fixed(60))
         .with_plugins(DefaultPlugins)
         .build()
         .run()

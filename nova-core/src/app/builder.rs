@@ -1,12 +1,12 @@
 
-use crate::{app::{Application, ApplicationProxy}, graphics::config::GraphicsConfiguration, plugin::{Plugin, Plugins, PluginsGroup}, window::{ControlFlow, WindowConfig}};
+use crate::{app::{Application, ApplicationProxy, framerate::FramerateLimit}, graphics::config::GraphicsConfiguration, plugin::{Plugin, Plugins, PluginsGroup}, window::{ControlFlow, WindowConfig}};
 
 pub struct ApplicationBuilder<P: ApplicationProxy> {
     pub(crate) window_config: WindowConfig,
     pub(crate) gfx_config: GraphicsConfiguration,
     pub(crate) control_flow: ControlFlow,
     pub(crate) proxy: P,
-    pub(crate) frame_rate: u64,
+    pub(crate) framerate_limit: FramerateLimit,
     pub(crate) plugins: Plugins,
 }
 
@@ -17,7 +17,7 @@ impl<P: ApplicationProxy> ApplicationBuilder<P> {
             gfx_config: GraphicsConfiguration::default(),
             control_flow: ControlFlow::Poll,
             proxy,
-            frame_rate: 240,
+            framerate_limit: FramerateLimit::Auto,
             plugins: Plugins::new(),
         }
     }
@@ -37,8 +37,8 @@ impl<P: ApplicationProxy> ApplicationBuilder<P> {
         self
     }
 
-    pub fn with_frame_rate(mut self, frame_rate: u64) -> Self {
-        self.frame_rate = frame_rate;
+    pub fn with_frame_rate_limit(mut self, framerate_limit: FramerateLimit) -> Self {
+        self.framerate_limit = framerate_limit;
         self
     }
 
